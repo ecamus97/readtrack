@@ -41,7 +41,16 @@ for (const method of ['get', 'post', 'patch', 'delete', 'put']) {
 }
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+// Cache-Control: no-cache doesn't mean "don't cache" — it means "always ask
+// the server whether this file changed before using the cached copy"
+// (a fast, cheap check via ETag/Last-Modified, not a full re-download). This
+// was missing before, so mobile Safari in particular could keep serving a
+// stale styles.css/app.js for a long time after a deploy with no visible
+// sign anything was wrong, which is a serious problem while we're actively
+// iterating on CSS.
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache')
+}));
 
 // Unauthenticated, does nothing but confirm the process is up — point an
 // uptime pinger (e.g. UptimeRobot) here every few minutes so Render's free
