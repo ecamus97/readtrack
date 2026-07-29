@@ -25,6 +25,17 @@ if (!process.env.DATABASE_URL) {
 // is what we want for anything the frontend just displays via `new Date(...)`.
 types.setTypeParser(1082, (val) => val);
 
+// All of our primary keys are `bigserial` (int8/bigint), which node-postgres
+// returns as STRINGS by default (a bigint could exceed what a JS number can
+// represent exactly). But every frontend click handler bakes the id in as a
+// plain number literal (e.g. onclick="openBookDetail(42)"), then compares it
+// with strict equality against the row's id — "42" === 42 is false, so
+// clicking a book, a calendar bar, a club, etc. silently did nothing. Parsing
+// int8 as a JS number fixes every one of those comparisons at once; our ids
+// are small auto-increment counters, nowhere near the ~9 quadrillion safe
+// integer ceiling, so there's no real precision risk. (OID 20 = int8/bigint).
+types.setTypeParser(20, (val) => parseInt(val, 10));
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   // Supabase's Postgres requires SSL; the default self-signed-looking chain
