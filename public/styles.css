@@ -888,3 +888,12 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
   font-size: 14px;
   text-align: center;
 }
+
+.header-username {
+  font-weight: 600;
+  color: var(--primary-dark);
+  margin-right: 4px;
+}
+@media (max-width: 640px) {
+  .header-username { display: none; } /* header is tight on mobile — name still shows on the Home greeting */
+}

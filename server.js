@@ -23,6 +23,23 @@ const { requireAuth } = require('./auth');
 const GOOGLE_BOOKS_API_KEY = process.env.GOOGLE_BOOKS_API_KEY || '';
 
 const app = express();
+
+// Express 4 doesn't catch rejected promises from `async (req, res) => {...}`
+// handlers on its own — an unhandled rejection there used to just hang the
+// request forever (or, worse, crash the whole Node process on a transient
+// DB hiccup, taking down every other in-flight request with it). Wrapping
+// every app.get/post/etc call here means a single failed request always
+// turns into a normal JSON 500 via the error-handling middleware at the
+// bottom of this file, instead of an outage.
+for (const method of ['get', 'post', 'patch', 'delete', 'put']) {
+  const original = app[method].bind(app);
+  app[method] = (routePath, ...handlers) => original(routePath, ...handlers.map(h =>
+    h.length >= 4 // (err, req, res, next) — an error handler, leave it alone
+      ? h
+      : async (req, res, next) => { try { await h(req, res, next); } catch (err) { next(err); } }
+  ));
+}
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 

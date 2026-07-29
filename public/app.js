@@ -327,8 +327,14 @@ document.getElementById('logoutBtn').onclick = async () => {
 };
 
 async function loadMyProfile() {
-  currentProfile = await api('/api/profile');
+  try {
+    currentProfile = await api('/api/profile');
+  } catch (e) {
+    showToast(`Couldn't load your profile: ${e.message}`);
+    return;
+  }
   document.getElementById('greetingName').textContent = ', ' + (currentProfile?.name || '');
+  document.getElementById('headerUserName').textContent = currentProfile?.name || '';
   document.getElementById('profileAvatar').src = avatarUrl(currentProfile?.avatar_seed || currentProfile?.username || currentProfile?.name);
 }
 
@@ -661,7 +667,12 @@ document.querySelectorAll('#libraryFilters .chip').forEach(chip => {
 let libraryCache = [];
 
 async function loadLibrary() {
-  libraryCache = await api(`/api/user-books`);
+  try {
+    libraryCache = await api(`/api/user-books`);
+  } catch (e) {
+    document.getElementById('library').innerHTML = `<p class="empty-state">Couldn't load your library: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
   renderLibrary();
   if (!document.getElementById('library-calendar-view').classList.contains('hidden')) renderLibraryCalendar();
 }
@@ -998,11 +1009,17 @@ async function clearSchedule(userBookId) {
 
 async function loadDashboard() {
   document.getElementById('greetingName').textContent = ', ' + (currentProfile?.name || '');
-  const [stats, readingNow] = await Promise.all([
-    api(`/api/stats`),
-    api(`/api/reading-now`)
-  ]);
   const container = document.getElementById('dashboard');
+  let stats, readingNow;
+  try {
+    [stats, readingNow] = await Promise.all([
+      api(`/api/stats`),
+      api(`/api/reading-now`)
+    ]);
+  } catch (e) {
+    container.innerHTML = `<p class="empty-state">Couldn't load your dashboard: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
   const progress = stats.meta_anual ? Math.min(100, Math.round((stats.leidos_este_anio / stats.meta_anual) * 100)) : null;
   const monthProgress = stats.meta_mensual ? Math.min(100, Math.round((stats.leidos_este_mes / stats.meta_mensual) * 100)) : null;
 
@@ -1168,7 +1185,9 @@ document.querySelectorAll('.social-tabs .chip').forEach(chip => {
 });
 
 async function loadSocial() {
-  await Promise.all([loadFeed(), loadContacts(), loadIncoming(), loadMyClubs()]);
+  // allSettled, not all — one section failing (e.g. clubs) shouldn't blank
+  // out the others (e.g. feed) that loaded fine.
+  await Promise.allSettled([loadFeed(), loadContacts(), loadIncoming(), loadMyClubs()]);
 }
 
 function timeAgo(dateStr) {
@@ -1185,8 +1204,14 @@ function timeAgo(dateStr) {
 }
 
 async function loadFeed() {
-  const rows = await api(`/api/feed`);
   const container = document.getElementById('feed');
+  let rows;
+  try {
+    rows = await api(`/api/feed`);
+  } catch (e) {
+    container.innerHTML = `<p class="empty-state">Couldn't load your feed: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
   if (!rows.length) {
     container.innerHTML = '<p class="empty-state">No updates yet. Add contacts to see their activity here.</p>';
     return;
@@ -1244,8 +1269,14 @@ document.getElementById('addContactBtn').onclick = async () => {
 };
 
 async function loadContacts() {
-  const rows = await api(`/api/contacts`);
   const container = document.getElementById('contactsList');
+  let rows;
+  try {
+    rows = await api(`/api/contacts`);
+  } catch (e) {
+    container.innerHTML = `<p class="empty-state">Couldn't load your contacts: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
   container.innerHTML = rows.map(c => `
     <div class="contact-row">
       <div class="who">
@@ -1258,8 +1289,14 @@ async function loadContacts() {
 }
 
 async function loadIncoming() {
-  const rows = await api(`/api/contacts/incoming`);
   const container = document.getElementById('incomingRequests');
+  let rows;
+  try {
+    rows = await api(`/api/contacts/incoming`);
+  } catch (e) {
+    container.innerHTML = '';
+    return;
+  }
   if (!rows.length) { container.innerHTML = ''; return; }
   container.innerHTML = `
     <h3 class="section-label">Requests received</h3>
@@ -1327,8 +1364,14 @@ async function confirmCreateClub() {
 }
 
 async function loadMyClubs() {
-  const rows = await api(`/api/clubs`);
   const container = document.getElementById('myClubsList');
+  let rows;
+  try {
+    rows = await api(`/api/clubs`);
+  } catch (e) {
+    container.innerHTML = `<p class="empty-state">Couldn't load your clubs: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
   container.innerHTML = rows.map(c => `
     <div class="club-row" onclick="openClubDetail(${c.id})">
       <div class="club-row-icon">📚</div>
@@ -1716,7 +1759,12 @@ document.getElementById('profileBtn').onclick = () => showView('profile');
 
 async function loadProfile() {
   const container = document.getElementById('profileContent');
-  currentProfile = await api('/api/profile');
+  try {
+    currentProfile = await api('/api/profile');
+  } catch (e) {
+    container.innerHTML = `<p class="empty-state">Couldn't load your profile: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
   const u = currentProfile;
   const year = new Date().getFullYear();
   let goal = null;

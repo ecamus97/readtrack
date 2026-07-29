@@ -13,10 +13,12 @@ GOOGLE_BOOKS_API_KEY=...
 SUPABASE_URL=https://TU-PROYECTO.supabase.co
 SUPABASE_ANON_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...
-DATABASE_URL=postgresql://postgres:TU_PASSWORD@db.TU-PROYECTO.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres.TU-PROYECTO:TU_PASSWORD@aws-REGION.pooler.supabase.com:6543/postgres
 ```
 
-Importante: si tu contraseña de la base de datos tiene caracteres especiales (`$`, `@`, `:`, `/`, etc.), tienes que codificarlos como "percent-encoding" en la URL (por ejemplo `$` se escribe `%24`) o la conexión va a fallar o, peor, va a conectarse con la contraseña equivocada sin avisar.
+Importante: usa el **connection pooler** de Supabase (el string de arriba, con usuario `postgres.<project-ref>` y host `...pooler.supabase.com`), NO la "Direct connection" (`db.<project-ref>.supabase.co`). La conexión directa solo resuelve a una dirección IPv6, y muchos hosts (Render incluido) no soportan salida IPv6 — se traduce en un error `ENETUNREACH` que tumba cada consulta a la base de datos. En Supabase, el botón "Connect" tiene una pestaña para elegir el modo (Transaction pooler / Session pooler / Direct connection); usa cualquiera de las dos primeras.
+
+También importante: si tu contraseña de la base de datos tiene caracteres especiales (`$`, `@`, `:`, `/`, etc.), tienes que codificarlos como "percent-encoding" en la URL (por ejemplo `$` se escribe `%24`, y si hay dos `$` seguidos van dos `%24` seguidos) o la conexión va a fallar o, peor, va a conectarse con la contraseña equivocada sin avisar.
 
 El `SUPABASE_ANON_KEY` también está pegado directamente en `public/index.html` (es la clave "pública" del proyecto — está diseñada para vivir en el navegador, a diferencia de `SUPABASE_SERVICE_ROLE_KEY`, que nunca debe salir del servidor).
 
