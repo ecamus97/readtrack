@@ -248,5 +248,38 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
   <script src="app.js?v=4"></script>
+
+  <!-- Diagnostic overlay: add ?debug=1 to the URL to show real on-device
+       measurements (viewport size, computed styles, scroll info) as
+       readable on-screen text — for screenshotting instead of guessing. -->
+  <script>
+    if (location.search.includes('debug=1')) {
+      window.addEventListener('load', () => {
+        setInterval(() => {
+          const panel = document.getElementById('__debugPanel') || (() => {
+            const el = document.createElement('div');
+            el.id = '__debugPanel';
+            el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:rgba(0,0,0,0.92);color:#0f0;font:10px/1.4 monospace;padding:8px;max-height:60vh;overflow:auto;white-space:pre-wrap;';
+            document.body.appendChild(el);
+            return el;
+          })();
+          const el = (sel) => document.querySelector(sel);
+          const rect = (sel) => { const n = el(sel); if (!n) return 'not found'; const r = n.getBoundingClientRect(); const cs = getComputedStyle(n); return `top=${r.top.toFixed(0)} h=${r.height.toFixed(0)} scrollH=${n.scrollHeight} overflowY=${cs.overflowY} display=${cs.display} minHeight=${cs.minHeight} position=${cs.position}`; };
+          panel.textContent = [
+            `window.innerHeight=${window.innerHeight}`,
+            `visualViewport.height=${window.visualViewport ? window.visualViewport.height.toFixed(0) : 'n/a'}`,
+            `document.documentElement.clientHeight=${document.documentElement.clientHeight}`,
+            `matchMedia(max-width:640px)=${window.matchMedia('(max-width: 640px)').matches}`,
+            `display-mode standalone=${window.matchMedia('(display-mode: standalone)').matches}`,
+            `body: ${rect('body')}`,
+            `#appScreen: ${rect('#appScreen')}`,
+            `main: ${rect('main')}`,
+            `nav: ${rect('nav')}`,
+            `#view-profile: ${rect('#view-profile')}`
+          ].join('\n');
+        }, 500);
+      });
+    }
+  </script>
 </body>
 </html>
