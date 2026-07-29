@@ -1,0 +1,5 @@
+node_modules/
+.env
+readtrack.db
+readtrack.db-journal
+.DS_Store

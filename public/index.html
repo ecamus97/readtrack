@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ReadTrack</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f6f62">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ReadTrack">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="brand-mark">R</span>
+      <h1>ReadTrack</h1>
+    </div>
+    <div class="user-switch">
+      <label for="userSelect">Account</label>
+      <select id="userSelect"></select>
+      <button id="newAccountBtn" class="icon-btn" title="New account" aria-label="New account">➕</button>
+      <button id="profileBtn" class="avatar-btn" title="Profile" aria-label="Profile"><img id="profileAvatar" src="" alt=""></button>
+    </div>
+  </header>
+
+  <nav>
+    <button data-view="dashboard" class="active"><span class="nav-icon">🏠</span><span class="nav-label">Home</span></button>
+    <button data-view="library"><span class="nav-icon">📚</span><span class="nav-label">My Library</span></button>
+    <button data-view="search"><span class="nav-icon">🔍</span><span class="nav-label">Search & Add</span></button>
+    <button data-view="social"><span class="nav-icon">👥</span><span class="nav-label">Social</span></button>
+  </nav>
+
+  <main>
+    <section id="view-dashboard">
+      <div class="view-heading">
+        <h2>Hi<span id="greetingName"></span> 👋</h2>
+        <p class="subtitle">Here's your reading summary.</p>
+      </div>
+      <div id="dashboard"></div>
+    </section>
+
+    <section id="view-library" class="hidden">
+      <div class="view-heading">
+        <h2>My Library</h2>
+        <p class="subtitle">Everything you've read, are reading, or want to read.</p>
+      </div>
+
+      <div class="filter-tabs" id="libraryViewTabs">
+        <button class="chip active" data-libview="list">📋 List</button>
+        <button class="chip" data-libview="calendar">📅 Calendar</button>
+      </div>
+
+      <div id="library-list-view">
+        <div class="filter-tabs" id="libraryFilters">
+          <button class="chip active" data-filter="todos">All</button>
+          <button class="chip" data-filter="leyendo">Reading</button>
+          <button class="chip" data-filter="por_leer">To Read</button>
+          <button class="chip" data-filter="leido">Read</button>
+        </div>
+        <div id="library" class="grid"></div>
+      </div>
+
+      <div id="library-calendar-view" class="hidden">
+        <div id="unscheduledBooks"></div>
+
+        <div class="calendar-toolbar">
+          <button id="calPrevBtn" class="icon-btn" aria-label="Previous month">←</button>
+          <h3 id="calMonthLabel" class="calendar-month-label"></h3>
+          <button id="calNextBtn" class="icon-btn" aria-label="Next month">→</button>
+        </div>
+        <div id="calendarGrid" class="calendar-grid"></div>
+      </div>
+    </section>
+
+    <section id="view-search" class="hidden">
+      <div class="view-heading">
+        <h2>Search for a book</h2>
+        <p class="subtitle">Search by title or author and add it to your library.</p>
+      </div>
+      <div id="clubModeBanner" class="club-mode-banner hidden"></div>
+      <div class="search-bar">
+        <input id="searchInput" placeholder="e.g. One Hundred Years of Solitude" />
+        <button id="searchBtn">Search</button>
+      </div>
+      <div class="filter-tabs" id="categoryFilters"></div>
+      <div id="searchResults" class="grid"></div>
+      <div id="recommendedSection">
+        <h3 class="section-label" id="recommendedLabel">Recommended for you</h3>
+        <div id="recommended" class="grid"></div>
+      </div>
+    </section>
+
+    <section id="view-social" class="hidden">
+      <div class="view-heading">
+        <h2>Social</h2>
+        <p class="subtitle">Updates from your contacts and your reading network.</p>
+      </div>
+
+      <div class="social-tabs">
+        <button class="chip active" data-social="feed">Updates</button>
+        <button class="chip" data-social="contacts">Contacts</button>
+        <button class="chip" data-social="clubs">Book Clubs</button>
+      </div>
+
+      <div id="social-feed">
+        <div id="feed" class="feed-list"></div>
+      </div>
+
+      <div id="social-contacts" class="hidden">
+        <div class="add-contact">
+          <input id="usernameInput" placeholder="Enter a username" />
+          <button id="addContactBtn">Send request</button>
+        </div>
+
+        <div class="invite-row">
+          <button id="inviteBtn" class="secondary">✉️ Invite a friend</button>
+          <button id="joinBtn" class="secondary">🔑 Redeem invite code</button>
+        </div>
+
+        <div id="incomingRequests"></div>
+
+        <h3 class="section-label">Your contacts</h3>
+        <div id="contactsList"></div>
+      </div>
+
+      <div id="social-clubs" class="hidden">
+        <div class="add-contact">
+          <input id="clubSearchInput" placeholder="Search a book club by name" />
+          <button id="clubSearchBtn">Search</button>
+        </div>
+        <div id="clubSearchResults"></div>
+
+        <div class="invite-row">
+          <button id="createClubBtn" class="secondary">📚 Create a book club</button>
+        </div>
+
+        <h3 class="section-label">Your clubs</h3>
+        <div id="myClubsList"></div>
+      </div>
+    </section>
+
+    <section id="view-profile" class="hidden">
+      <div class="view-heading">
+        <h2>Profile</h2>
+        <p class="subtitle">Your avatar, achievements, and reading goals.</p>
+      </div>
+      <div id="profileContent"></div>
+    </section>
+
+    <section id="view-club-detail" class="hidden">
+      <div class="view-heading club-detail-heading">
+        <button id="backToClubsBtn" class="icon-btn" title="Back to Social" aria-label="Back to Social">←</button>
+        <div>
+          <h2 id="clubDetailName">Club</h2>
+          <p class="subtitle" id="clubDetailDescription"></p>
+        </div>
+      </div>
+      <div id="clubDetailContent"></div>
+    </section>
+  </main>
+
+  <div id="modalOverlay" class="modal-overlay hidden">
+    <div class="modal-box" id="modalBox"></div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

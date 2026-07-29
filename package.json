@@ -1,0 +1,17 @@
+{
+  "name": "readtrack",
+  "version": "0.1.0",
+  "description": "Prototipo de plataforma para trackear lecturas propias y de contactos",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
