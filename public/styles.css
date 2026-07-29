@@ -626,6 +626,11 @@ select {
 
   main {
     flex: 1;
+    min-height: 0; /* THE key fix: without this, a flex item won't shrink below
+      its content's height, so overflow-y:auto never actually kicks in — main
+      just grows to fit everything (get clipped by body's overflow:hidden
+      instead of scrolling), which is exactly why Profile content looked cut
+      off with no way to reach the rest of it. */
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding: 20px 16px 96px; /* extra bottom padding so content clears the fixed bottom nav */
