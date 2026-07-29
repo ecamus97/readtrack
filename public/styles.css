@@ -847,3 +847,34 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
 .calendar-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .calendar-bar-cover.cover-wrap { width: 13px; height: 17px; border-radius: 2px; flex-shrink: 0; background: rgba(255,255,255,0.35); }
 .calendar-bar-cover .placeholder { font-size: 0.55rem; }
+
+/* ---------- Auth screen (login / signup) ---------- */
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+}
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  background: white;
+  border-radius: 18px;
+  padding: 32px 28px;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+}
+.auth-brand { justify-content: center; margin-bottom: 6px; }
+.auth-card .subtitle { text-align: center; margin-bottom: 22px; }
+.auth-submit { width: 100%; margin-top: 6px; }
+.auth-toggle { text-align: center; margin-top: 14px; font-size: 14px; color: var(--text-muted, #666); }
+.auth-error {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fde8e8;
+  color: #a33a3a;
+  font-size: 14px;
+  text-align: center;
+}

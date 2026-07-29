@@ -1,61 +1,76 @@
-# ReadTrack (prototipo)
+# ReadTrack
 
-Plataforma personal para trackear libros leídos, en curso y por leer, con indicadores de lectura y comparativa entre contactos.
+Plataforma personal/familiar para trackear libros leídos, en curso y por leer, con dashboard, logros, clubes de lectura y comparativa entre contactos.
 
-## Cómo correrlo
+Corre en producción sobre **Supabase** (Postgres + autenticación real por email/contraseña) y se despliega en **Render**.
 
-Requiere Node.js 22.5 o superior (usa el módulo `node:sqlite` incluido en Node, así que no necesita instalar SQLite ni compilar nada nativo).
+## Variables de entorno necesarias
+
+Copia estas variables a un archivo `.env` en `readtrack/` para correr localmente, y configúralas también como "Environment Variables" en Render (ver más abajo):
+
+```
+GOOGLE_BOOKS_API_KEY=...
+SUPABASE_URL=https://TU-PROYECTO.supabase.co
+SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
+DATABASE_URL=postgresql://postgres:TU_PASSWORD@db.TU-PROYECTO.supabase.co:5432/postgres
+```
+
+Importante: si tu contraseña de la base de datos tiene caracteres especiales (`$`, `@`, `:`, `/`, etc.), tienes que codificarlos como "percent-encoding" en la URL (por ejemplo `$` se escribe `%24`) o la conexión va a fallar o, peor, va a conectarse con la contraseña equivocada sin avisar.
+
+El `SUPABASE_ANON_KEY` también está pegado directamente en `public/index.html` (es la clave "pública" del proyecto — está diseñada para vivir en el navegador, a diferencia de `SUPABASE_SERVICE_ROLE_KEY`, que nunca debe salir del servidor).
+
+## Paso 1 — Correr el schema en Supabase
+
+1. Entra a tu proyecto en [supabase.com](https://supabase.com) → **SQL Editor** → **New query**.
+2. Pega el contenido completo de `schema.sql` (en la raíz de `readtrack/`) y ejecútalo. Es seguro correrlo más de una vez.
+3. Esto crea todas las tablas (`profiles`, `books`, `user_books`, `contacts`, `goals`, `invites`, `book_clubs`, etc.) y un trigger que crea automáticamente el `profile` de cada persona apenas se registra.
+
+## Paso 2 — Correr localmente (opcional, para probar antes de desplegar)
+
+Requiere Node.js 22.5+.
 
 ```bash
 cd readtrack
 npm install
-npm run seed     # crea la base de datos con 2 usuarios de ejemplo y 3 libros
-npm start         # levanta el servidor en http://localhost:3300
+npm start
 ```
 
-Abre `http://localhost:3300` en el navegador.
+Abre `http://localhost:3300`. La primera vez, crea tu cuenta desde la pantalla de "Sign up" (nombre, usuario, email, contraseña) — ya no hay selector de cuentas ni botón de "cuenta nueva" sin contraseña, cada persona inicia sesión con su propio email.
 
-## Mejorar el auto-completado de páginas/categorías (opcional, recomendado)
+## Paso 3 — Desplegar en Render
 
-Sin ninguna configuración extra, la app ya intenta rellenar páginas y categorías automáticamente usando Open Library (gratis, sin límite de uso) y, como bonus, Google Books. El problema es que Google Books sin API key tiene una cuota diaria gratuita muy baja compartida entre todos los que no configuran su propia key, así que se agota rápido (vas a ver errores 429 en la terminal cuando pasa).
+1. Sube este proyecto a un repositorio de GitHub (el `.gitignore` ya excluye `.env` y `node_modules`, así que las claves no se suben).
+2. En Render: **New** → **Web Service** → conecta el repositorio.
+3. Configuración del servicio:
+   - **Root directory**: `readtrack` (si el repo tiene la carpeta en la raíz del repo, déjalo vacío)
+   - **Build command**: `npm install`
+   - **Start command**: `npm start`
+   - **Instance type**: Free está bien para uso personal/familiar
+4. En la sección **Environment**, agrega las mismas variables del `.env` (GOOGLE_BOOKS_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, DATABASE_URL). Render define `PORT` automáticamente, no hace falta agregarla.
+5. Deploy. Render te da una URL pública (`https://tu-app.onrender.com`) — esa es la URL de producción para compartir con tu grupo.
 
-Para tener una cuota propia y mucho más generosa (gratis, no requiere tarjeta de crédito para el uso normal de esta app):
+Nota: el plan gratuito de Render "duerme" el servicio tras un rato sin uso, y la primera visita después de eso tarda unos segundos en despertar. Es un comportamiento normal del plan free, no un error.
 
-1. Ve a [Google Cloud Console](https://console.cloud.google.com/), crea un proyecto nuevo (o usa uno existente).
-2. Busca "Books API" en el buscador de APIs, ábrela y presiona "Habilitar".
-3. Ve a "Credenciales" → "Crear credenciales" → "Clave de API". Copia la clave que te genera.
-4. En la carpeta `readtrack`, crea un archivo llamado `.env` (así, con el punto adelante) con esta línea adentro:
+## Qué incluye
 
-```
-GOOGLE_BOOKS_API_KEY=tu_clave_aqui
-```
-
-5. Reinicia el servidor (`npm start`). No hace falta ningún cambio de código, el servidor lee este archivo solo.
-
-Si no configuras nada, la app sigue funcionando igual, solo que depende más de Open Library (que en general es suficiente, pero a veces le faltan páginas o categorías a libros específicos).
-
-## Qué incluye este prototipo
-
-- **Catálogo único de libros** compartido entre todos los usuarios (tabla `books`), evitando llamadas duplicadas a la API externa.
-- **Búsqueda de libros** vía Google Books API (gratis, sin API key) desde la pestaña "Buscar y agregar".
-- **Mi librería**: cambiar estado (por leer / leyendo / leído), poner rating al terminar un libro.
-- **Dashboard** con: ritmo y volumen (libros/páginas leídas, días promedio por libro), metas anuales y progreso, top autores/géneros, rating promedio.
-- **Contactos**: agregar contacto (queda pendiente), aceptar solicitud, y comparar estadísticas + libros en común solo entre contactos aceptados.
-- Selector de usuario en la parte superior para simular multiusuario sin tener que armar login todavía.
-
-## Limitaciones de este prototipo (a resolver antes de un uso real)
-
-- No hay autenticación real (contraseñas, sesiones). El "selector de usuario" es solo para probar la lógica multiusuario.
-- Base de datos SQLite local (`readtrack.db`). Para producción con más gente, migrar a Postgres (ej. Supabase/Neon) es directo porque el esquema ya está normalizado.
-- La búsqueda de libros depende de que Google Books API esté disponible desde donde corras el servidor; si algún libro no aparece bien, se puede agregar como fallback Open Library API.
-- Falta paginación, manejo de errores más fino en la UI, y edición de notas de libros desde la interfaz (el campo existe en la base de datos).
+- **Autenticación real** (Supabase Auth, email + contraseña) — cada persona tiene su propia cuenta y sesión; el servidor nunca confía en un `user_id` que mande el navegador, siempre lo deriva del token de sesión verificado.
+- **Catálogo único de libros** compartido entre todos los usuarios, para no duplicar llamadas a APIs externas.
+- **Búsqueda y enriquecimiento automático** de páginas/categorías (Open Library + Google Books).
+- **Mi librería** con vista de lista y vista de **calendario** (arrastra/programa fechas de inicio y fin estimadas).
+- **Home** con libros en lectura actual, metas anuales/mensuales, métricas, gustos de lectura y gráficos de evolución.
+- **Social**: feed de actividad de tus contactos, contactos por username o código de invitación, y **clubes de lectura** (metas semanales compartidas, progreso por miembro).
+- **Logros/achievements** categorizados.
+- App instalable como **PWA** (ícono, manifest) y con diseño responsive para celular.
 
 ## Estructura
 
 ```
 readtrack/
-  db.js        -> esquema de base de datos (users, books, user_books, contacts, goals)
-  seed.js       -> datos de ejemplo
+  schema.sql    -> schema de Postgres (correr una vez en Supabase SQL Editor)
+  db.js         -> capa de acceso a datos (pg / Postgres)
+  auth.js       -> middleware que verifica el token de sesión de Supabase
   server.js     -> API (Express)
-  public/       -> frontend (HTML/CSS/JS vanilla)
+  public/       -> frontend (HTML/CSS/JS vanilla, sin build step)
+  seed.js       -> [obsoleto] sembraba datos en la versión anterior con SQLite local; no aplica a Postgres/producción
 ```

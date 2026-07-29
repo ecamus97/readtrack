@@ -2,10 +2,10 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const db = require('./db');
+const { requireAuth } = require('./auth');
 
-// Carga manual de un archivo .env opcional (sin dependencias externas), para
-// poder guardar una API key de Google Books sin tener que exportarla cada vez
-// que se levanta el servidor. Ver README para cómo conseguir la key gratis.
+// Manual .env loader (no dependency needed), so secrets don't have to be
+// exported by hand every time the server starts. See README for details.
 (function loadDotEnv() {
   const envPath = path.join(__dirname, '.env');
   if (!fs.existsSync(envPath)) return;
@@ -26,54 +26,53 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---------- Usuarios ----------
+// Every /api/* route requires a valid Supabase session from here on — the
+// server figures out who's asking from the verified token (req.userId),
+// it never trusts a user_id the client sends. This is the core change from
+// the local-prototype version, where anyone could pass any user_id.
+app.use('/api', requireAuth);
 
-app.get('/api/users', (req, res) => {
-  const users = db.prepare('SELECT id, name, username, email, avatar_seed FROM users ORDER BY name').all();
-  res.json(users);
+// ---------- Profile ----------
+// Profiles are auto-created by a Postgres trigger the moment someone signs
+// up via Supabase Auth (see schema.sql), so there's no "create user" endpoint
+// here anymore — only read/update your own profile.
+
+app.get('/api/profile', async (req, res) => {
+  const profile = await db.get('SELECT id, name, username, avatar_seed, created_at FROM profiles WHERE id = ?', [req.userId]);
+  if (!profile) return res.status(404).json({ error: 'Profile not found yet — try again in a moment' });
+  res.json(profile);
 });
 
-app.post('/api/users', (req, res) => {
-  const { name, email, username, avatar_seed } = req.body;
-  if (!name) return res.status(400).json({ error: 'name is required' });
+app.patch('/api/profile', async (req, res) => {
+  const { name, username, avatar_seed } = req.body;
+  const fields = [];
+  const values = [];
+  if (name !== undefined) { fields.push('name = ?'); values.push(name); }
+  if (username !== undefined) { fields.push('username = ?'); values.push(username || null); }
+  if (avatar_seed !== undefined) { fields.push('avatar_seed = ?'); values.push(avatar_seed); }
+  if (!fields.length) return res.status(400).json({ error: 'nothing to update' });
+  values.push(req.userId);
   try {
-    const info = db.prepare('INSERT INTO users (name, email, username, avatar_seed) VALUES (?, ?, ?, ?)')
-      .run(name, email || null, username || null, avatar_seed || username || name);
-    res.json({ id: info.lastInsertRowid, name, email, username, avatar_seed: avatar_seed || username || name });
+    await db.run(`UPDATE profiles SET ${fields.join(', ')} WHERE id = ?`, values);
+    res.json({ ok: true });
   } catch (err) {
-    if (String(err).includes('UNIQUE')) {
-      return res.status(409).json({ error: 'That username is already taken' });
-    }
+    if (String(err).includes('unique')) return res.status(409).json({ error: 'That username is already taken' });
     throw err;
   }
 });
 
-app.patch('/api/users/:id', (req, res) => {
-  const { name, avatar_seed } = req.body;
-  const fields = [];
-  const values = [];
-  if (name !== undefined) { fields.push('name = ?'); values.push(name); }
-  if (avatar_seed !== undefined) { fields.push('avatar_seed = ?'); values.push(avatar_seed); }
-  if (!fields.length) return res.status(400).json({ error: 'nothing to update' });
-  values.push(req.params.id);
-  db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-  res.json({ ok: true });
-});
-
-// Looks up a user by their unique username, used when sending a contact
+// Looks up ANY profile by its unique username — used when sending a contact
 // request by username instead of picking from a list of every user.
-app.get('/api/users/lookup', (req, res) => {
+app.get('/api/profiles/lookup', async (req, res) => {
   const { username } = req.query;
   if (!username) return res.status(400).json({ error: 'username is required' });
-  const user = db.prepare('SELECT id, name, username FROM users WHERE username = ?').get(username);
+  const user = await db.get('SELECT id, name, username FROM profiles WHERE username = ?', [username]);
   if (!user) return res.status(404).json({ error: 'No user found with that username' });
   res.json(user);
 });
 
-// ---------- Busqueda de libros (Google Books API) ----------
+// ---------- Book search (Google Books API) ----------
 
-// Si hay una API key configurada (ver .env / README), se usa: sube muchísimo
-// la cuota diaria gratuita respecto a no usar ninguna key.
 function withGoogleKey(url) {
   return GOOGLE_BOOKS_API_KEY ? `${url}&key=${GOOGLE_BOOKS_API_KEY}` : url;
 }
@@ -83,10 +82,8 @@ async function searchGoogleBooks(q) {
   const r = await fetch(url);
   const data = await r.json();
   if (!r.ok || data.error) {
-    // Google Books devuelve status 200 casi siempre, pero por si acaso
-    // (cuota excedida, request mal formado, etc.) lo dejamos logueado.
     console.error('Google Books returned an error:', r.status, JSON.stringify(data.error || data));
-    return null; // null = "hubo un problema", distinto de [] = "no hay resultados"
+    return null;
   }
   return (data.items || []).map(item => {
     const info = item.volumeInfo || {};
@@ -131,13 +128,11 @@ app.get('/api/search', async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).json({ error: 'q is required' });
 
-  // Se intenta primero con Google Books (mejor cobertura de portadas) y si
-  // falla o no trae resultados, se cae a Open Library como respaldo.
   let results = null;
   try {
     results = await searchGoogleBooks(q);
   } catch (err) {
-    console.error('Fallo al llamar a Google Books API:', err.message);
+    console.error('Google Books call failed:', err.message);
   }
 
   if (!results || results.length === 0) {
@@ -145,12 +140,12 @@ app.get('/api/search', async (req, res) => {
       const fallback = await searchOpenLibrary(q);
       if (fallback && fallback.length) results = fallback;
     } catch (err) {
-      console.error('Fallo al llamar a Open Library API:', err.message);
+      console.error('Open Library call failed:', err.message);
     }
   }
 
   if (results === null) {
-    return res.status(502).json({ error: 'Could not reach any book API. Check the server terminal for details.' });
+    return res.status(502).json({ error: 'Could not reach any book API. Check the server logs for details.' });
   }
   res.json(results);
 });
@@ -165,21 +160,15 @@ async function fetchWithTimeout(url, ms) {
   }
 }
 
-// Si a un libro le faltan páginas o categorías se intenta completar probando
-// varias fuentes en orden. Open Library va primero porque no tiene límite de
-// cuota; Google Books queda como bonus al final porque su cuota gratuita sin
-// API key se agota rápido (se ve como error 429 en los logs si pasa).
-// Cada paso deja un console.log/error para poder diagnosticar desde la
-// terminal si algún libro puntual sigue sin completarse.
+// Tries several sources in order to fill in missing pages/categories. Open
+// Library goes first (no quota); Google Books is a last-resort bonus since
+// its free quota without an API key runs out fast.
 async function enrichBook(book) {
   if (book.pages && book.categories) return book;
   console.log(`[enrich] "${book.title}" — missing: ${!book.pages ? 'pages ' : ''}${!book.categories ? 'categories' : ''}`);
 
   let workKey = null;
 
-  // 1) Open Library: buscar por título + autor. Sin límite de cuota, así que
-  // es la fuente principal. El resultado trae isbn y el "work key", que se
-  // usan después para ir a buscar el detalle completo (páginas y subjects).
   if ((!book.pages || !book.categories) && book.title) {
     try {
       const params = new URLSearchParams({ title: book.title, limit: '1' });
@@ -193,20 +182,13 @@ async function enrichBook(book) {
           if (!book.pages && doc.number_of_pages_median) book.pages = doc.number_of_pages_median;
           if (!book.categories && doc.subject?.length) book.categories = doc.subject.slice(0, 3).join(', ');
           workKey = doc.key || null;
-          console.log(`[enrich]   Open Library (search) found doc: isbn=${doc.isbn?.[0]}, pages=${doc.number_of_pages_median}, workKey=${workKey}`);
-        } else {
-          console.log('[enrich]   Open Library (search) found no results');
         }
-      } else {
-        console.log(`[enrich]   Open Library (search) responded ${r.status}`);
       }
     } catch (err) {
       console.error('[enrich]   Open Library (search) failed:', err.message);
     }
   }
 
-  // 2) Si hay ISBN (propio o recién encontrado) y aún falta algo, el detalle
-  // por ISBN suele traer el número de páginas más preciso.
   if (book.isbn && (!book.pages || !book.categories)) {
     try {
       const r = await fetchWithTimeout(`https://openlibrary.org/isbn/${book.isbn}.json`, 4000);
@@ -217,17 +199,12 @@ async function enrichBook(book) {
           book.categories = data.subjects.slice(0, 3).join(', ');
         }
         workKey = workKey || data.works?.[0]?.key || null;
-        console.log(`[enrich]   Open Library (isbn) found: pages=${data.number_of_pages}, subjects=${(data.subjects || []).slice(0, 3)}`);
-      } else {
-        console.log(`[enrich]   Open Library (isbn) responded ${r.status}`);
       }
     } catch (err) {
       console.error('[enrich]   Open Library (isbn) failed:', err.message);
     }
   }
 
-  // 3) El "work" en Open Library suele traer subjects/géneros más completos
-  // que el registro por ISBN o el resultado de búsqueda.
   if (!book.categories && workKey) {
     try {
       const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, 4000);
@@ -235,7 +212,6 @@ async function enrichBook(book) {
         const data = await r.json();
         if (Array.isArray(data.subjects) && data.subjects.length) {
           book.categories = data.subjects.slice(0, 3).join(', ');
-          console.log(`[enrich]   Open Library (work) found subjects: ${data.subjects.slice(0, 3)}`);
         }
       }
     } catch (err) {
@@ -243,9 +219,6 @@ async function enrichBook(book) {
     }
   }
 
-  // 4) Si todavía falta el número de páginas, se revisan las ediciones del
-  // "work": el resultado de búsqueda muchas veces no trae number_of_pages,
-  // pero casi siempre alguna de sus ediciones individuales sí lo tiene.
   if (!book.pages && workKey) {
     try {
       const r = await fetchWithTimeout(`https://openlibrary.org${workKey}/editions.json?limit=20`, 4000);
@@ -255,9 +228,6 @@ async function enrichBook(book) {
         if (withPages) {
           book.pages = withPages.number_of_pages;
           if (!book.isbn && withPages.isbn_13?.[0]) book.isbn = withPages.isbn_13[0];
-          console.log(`[enrich]   Open Library (editions) found pages=${withPages.number_of_pages}`);
-        } else {
-          console.log(`[enrich]   Open Library (editions) checked ${data.entries?.length || 0} editions, none with page count`);
         }
       }
     } catch (err) {
@@ -265,9 +235,6 @@ async function enrichBook(book) {
     }
   }
 
-  // 5) Google Books como último recurso (bonus): su cuota gratuita sin API
-  // key es muy limitada y puede devolver 429, pero si funciona (o si hay una
-  // API key configurada en .env) puede traer datos que Open Library no tenga.
   if (!book.pages || !book.categories) {
     try {
       const query = `${book.title} ${book.authors || ''}`.trim();
@@ -277,7 +244,6 @@ async function enrichBook(book) {
         if (!book.isbn && match.isbn) book.isbn = match.isbn;
         if (!book.pages && match.pages) book.pages = match.pages;
         if (!book.categories && match.categories) book.categories = match.categories;
-        console.log(`[enrich]   Google Books found: pages=${match.pages}, categories=${match.categories}`);
       }
     } catch (err) {
       console.error('[enrich]   Google Books failed:', err.message);
@@ -288,46 +254,24 @@ async function enrichBook(book) {
   return book;
 }
 
-// Endpoint que el frontend llama justo antes de mostrar el modal de "agregar",
-// para que páginas/categorías ya vengan completas y el usuario casi nunca
-// tenga que tipearlas a mano (solo queda como respaldo editable).
 app.post('/api/enrich', async (req, res) => {
   const book = { ...req.body };
   await enrichBook(book);
   res.json(book);
 });
 
-// ---------- Catalogo de libros ----------
+// ---------- Book catalog ----------
 
-// node:sqlite no trae un helper de transacciones como better-sqlite3,
-// asi que envolvemos manualmente con BEGIN/COMMIT/ROLLBACK.
-function findOrCreateBook(b) {
-  const existing = db.prepare('SELECT * FROM books WHERE api_id = ?').get(b.api_id);
+async function findOrCreateBook(b) {
+  const existing = await db.get('SELECT * FROM books WHERE api_id = ?', [b.api_id]);
   if (existing) return existing;
-  const params = {
-    api_id: b.api_id,
-    isbn: b.isbn || null,
-    title: b.title,
-    authors: b.authors || null,
-    cover_url: b.cover_url || null,
-    pages: b.pages || null,
-    published_year: b.published_year || null,
-    categories: b.categories || null,
-    language: b.language || null
-  };
-  db.exec('BEGIN');
-  try {
-    const info = db.prepare(`
+  return db.withTransaction(async (tx) => {
+    const info = await tx.run(`
       INSERT INTO books (api_id, isbn, title, authors, cover_url, pages, published_year, categories, language)
-      VALUES (@api_id, @isbn, @title, @authors, @cover_url, @pages, @published_year, @categories, @language)
-    `).run(params);
-    const row = db.prepare('SELECT * FROM books WHERE id = ?').get(info.lastInsertRowid);
-    db.exec('COMMIT');
-    return row;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [b.api_id, b.isbn || null, b.title, b.authors || null, b.cover_url || null, b.pages || null, b.published_year || null, b.categories || null, b.language || null]);
+    return tx.get('SELECT * FROM books WHERE id = ?', [info.lastInsertRowid]);
+  });
 }
 
 app.post('/api/books', async (req, res) => {
@@ -335,61 +279,64 @@ app.post('/api/books', async (req, res) => {
   if (!b.title) return res.status(400).json({ error: 'title is required' });
   b.api_id = b.api_id || `manual-${b.isbn || b.title}`;
   await enrichBook(b);
-  const book = findOrCreateBook(b);
+  const book = await findOrCreateBook(b);
   res.json(book);
 });
 
-// Re-intenta completar páginas/categorías de un libro que ya está en el
-// catálogo (por ejemplo uno agregado antes de tener este enriquecimiento) y
-// guarda lo que encuentre. Como el catálogo es compartido, esto beneficia a
-// todos los usuarios que tengan ese libro, no solo a quien lo pidió.
 app.post('/api/books/:id/refresh', async (req, res) => {
-  const existing = db.prepare('SELECT * FROM books WHERE id = ?').get(req.params.id);
+  const existing = await db.get('SELECT * FROM books WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'Book not found' });
   const enriched = await enrichBook({ ...existing });
-  db.prepare('UPDATE books SET pages = ?, categories = ?, isbn = ? WHERE id = ?')
-    .run(enriched.pages || null, enriched.categories || null, enriched.isbn || existing.isbn || null, existing.id);
-  const updated = db.prepare('SELECT * FROM books WHERE id = ?').get(existing.id);
+  await db.run('UPDATE books SET pages = ?, categories = ?, isbn = ? WHERE id = ?',
+    [enriched.pages || null, enriched.categories || null, enriched.isbn || existing.isbn || null, existing.id]);
+  const updated = await db.get('SELECT * FROM books WHERE id = ?', [existing.id]);
   res.json(updated);
 });
 
-// ---------- Mi libreria (user_books) ----------
+// ---------- My library (user_books) ----------
 
 app.post('/api/user-books', async (req, res) => {
-  const { user_id, book, status, rating, start_date, end_date } = req.body;
-  if (!user_id || !book) return res.status(400).json({ error: 'user_id and book are required' });
+  const { book, status, rating, start_date, end_date } = req.body;
+  if (!book) return res.status(400).json({ error: 'book is required' });
   book.api_id = book.api_id || `manual-${book.isbn || book.title}`;
   await enrichBook(book);
-  const bookRow = findOrCreateBook(book);
+  const bookRow = await findOrCreateBook(book);
   try {
-    const info = db.prepare(`
+    const info = await db.run(`
       INSERT INTO user_books (user_id, book_id, status, rating, start_date, end_date)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(user_id, bookRow.id, status || 'por_leer', rating || null, start_date || null, end_date || null);
+    `, [req.userId, bookRow.id, status || 'por_leer', rating || null, start_date || null, end_date || null]);
     res.json({ id: info.lastInsertRowid, book_id: bookRow.id });
   } catch (err) {
-    if (String(err).includes('UNIQUE')) {
+    if (String(err).includes('unique')) {
       return res.status(409).json({ error: 'That book is already in your list' });
     }
     throw err;
   }
 });
 
-app.get('/api/user-books', (req, res) => {
-  const { user_id } = req.query;
-  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
-  const rows = db.prepare(`
+app.get('/api/user-books', async (req, res) => {
+  const rows = await db.all(`
     SELECT ub.id, ub.status, ub.rating, ub.notes, ub.start_date, ub.end_date,
            ub.planned_start_date, ub.planned_end_date,
            b.id as book_id, b.title, b.authors, b.cover_url, b.pages, b.published_year, b.categories, b.language
     FROM user_books ub JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id = ?
     ORDER BY ub.created_at DESC
-  `).all(user_id);
+  `, [req.userId]);
   res.json(rows);
 });
 
-app.patch('/api/user-books/:id', (req, res) => {
+// Ownership check shared by every user_books mutation below, so one user can
+// never edit or delete another user's library row by guessing an id.
+async function loadOwnedUserBook(id, userId) {
+  return db.get('SELECT * FROM user_books WHERE id = ? AND user_id = ?', [id, userId]);
+}
+
+app.patch('/api/user-books/:id', async (req, res) => {
+  const owned = await loadOwnedUserBook(req.params.id, req.userId);
+  if (!owned) return res.status(404).json({ error: 'Not found' });
+
   const { status, rating, notes, start_date, end_date, planned_start_date, planned_end_date } = req.body;
   const fields = [];
   const values = [];
@@ -398,170 +345,147 @@ app.patch('/api/user-books/:id', (req, res) => {
   }
   if (!fields.length) return res.status(400).json({ error: 'nothing to update' });
   values.push(req.params.id);
-  db.prepare(`UPDATE user_books SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  await db.run(`UPDATE user_books SET ${fields.join(', ')} WHERE id = ?`, values);
   res.json({ ok: true });
 });
 
-app.delete('/api/user-books/:id', (req, res) => {
-  db.prepare('DELETE FROM user_books WHERE id = ?').run(req.params.id);
+app.delete('/api/user-books/:id', async (req, res) => {
+  const owned = await loadOwnedUserBook(req.params.id, req.userId);
+  if (!owned) return res.status(404).json({ error: 'Not found' });
+  await db.run('DELETE FROM user_books WHERE id = ?', [req.params.id]);
   res.json({ ok: true });
 });
 
-// ---------- Metas ----------
+// ---------- Goals ----------
 
-app.post('/api/goals', (req, res) => {
-  const { user_id, year, target_books, monthly_target } = req.body;
-  db.prepare(`
+app.post('/api/goals', async (req, res) => {
+  const { year, target_books, monthly_target } = req.body;
+  await db.run(`
     INSERT INTO goals (user_id, year, target_books, monthly_target) VALUES (?, ?, ?, ?)
-    ON CONFLICT(user_id, year) DO UPDATE SET
+    ON CONFLICT (user_id, year) DO UPDATE SET
       target_books = excluded.target_books,
       monthly_target = excluded.monthly_target
-  `).run(user_id, year, target_books || null, monthly_target || null);
+  `, [req.userId, year, target_books || null, monthly_target || null]);
   res.json({ ok: true });
 });
 
-app.get('/api/goals', (req, res) => {
-  const { user_id, year } = req.query;
+app.get('/api/goals', async (req, res) => {
+  const { year } = req.query;
   if (year) {
-    const row = db.prepare('SELECT year, target_books, monthly_target FROM goals WHERE user_id = ? AND year = ?').get(user_id, year);
+    const row = await db.get('SELECT year, target_books, monthly_target FROM goals WHERE user_id = ? AND year = ?', [req.userId, year]);
     return res.json(row || null);
   }
-  const rows = db.prepare('SELECT year, target_books, monthly_target FROM goals WHERE user_id = ? ORDER BY year DESC').all(user_id);
+  const rows = await db.all('SELECT year, target_books, monthly_target FROM goals WHERE user_id = ? ORDER BY year DESC', [req.userId]);
   res.json(rows);
 });
 
-// ---------- Contactos ----------
+// ---------- Contacts ----------
 
-app.post('/api/contacts', (req, res) => {
-  const { user_id, contact_user_id, contact_username } = req.body;
+app.post('/api/contacts', async (req, res) => {
+  const { contact_user_id, contact_username } = req.body;
   let targetId = contact_user_id;
   if (!targetId && contact_username) {
-    const target = db.prepare('SELECT id FROM users WHERE username = ?').get(contact_username);
+    const target = await db.get('SELECT id FROM profiles WHERE username = ?', [contact_username]);
     if (!target) return res.status(404).json({ error: 'No user found with that username' });
     targetId = target.id;
   }
   if (!targetId) return res.status(400).json({ error: 'contact_user_id or contact_username is required' });
-  if (parseInt(targetId) === parseInt(user_id)) return res.status(400).json({ error: "You can't add yourself" });
-  db.prepare('INSERT OR IGNORE INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, ?)').run(user_id, targetId, 'pendiente');
+  if (targetId === req.userId) return res.status(400).json({ error: "You can't add yourself" });
+  await db.run(`
+    INSERT INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, 'pendiente')
+    ON CONFLICT (user_id, contact_user_id) DO NOTHING
+  `, [req.userId, targetId]);
   res.json({ ok: true });
 });
 
-app.post('/api/contacts/:id/accept', (req, res) => {
-  const row = db.prepare('SELECT * FROM contacts WHERE id = ?').get(req.params.id);
+app.post('/api/contacts/:id/accept', async (req, res) => {
+  // Only the recipient of the request can accept it.
+  const row = await db.get('SELECT * FROM contacts WHERE id = ? AND contact_user_id = ?', [req.params.id, req.userId]);
   if (!row) return res.status(404).json({ error: 'not found' });
-  db.prepare('UPDATE contacts SET status = ? WHERE id = ?').run('aceptado', req.params.id);
-  db.prepare('INSERT OR IGNORE INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, ?)')
-    .run(row.contact_user_id, row.user_id, 'aceptado');
+  await db.run('UPDATE contacts SET status = ? WHERE id = ?', ['aceptado', req.params.id]);
+  await db.run(`
+    INSERT INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, 'aceptado')
+    ON CONFLICT (user_id, contact_user_id) DO UPDATE SET status = 'aceptado'
+  `, [row.contact_user_id, row.user_id]);
   res.json({ ok: true });
 });
 
-app.get('/api/contacts', (req, res) => {
-  const { user_id } = req.query;
-  // Contactos aceptados + solicitudes que YO envié y siguen pendientes.
-  const rows = db.prepare(`
-    SELECT c.id, c.status, u.id as contact_user_id, u.name, u.email
-    FROM contacts c JOIN users u ON u.id = c.contact_user_id
+app.get('/api/contacts', async (req, res) => {
+  // Accepted contacts + requests I sent that are still pending.
+  const rows = await db.all(`
+    SELECT c.id, c.status, u.id as contact_user_id, u.name
+    FROM contacts c JOIN profiles u ON u.id = c.contact_user_id
     WHERE c.user_id = ?
     ORDER BY c.status DESC, u.name
-  `).all(user_id);
+  `, [req.userId]);
   res.json(rows);
 });
 
-app.get('/api/contacts/incoming', (req, res) => {
-  const { user_id } = req.query;
-  // Solicitudes que otros me enviaron y aun no he aceptado.
-  const rows = db.prepare(`
-    SELECT c.id, u.id as requester_id, u.name, u.email
-    FROM contacts c JOIN users u ON u.id = c.user_id
+app.get('/api/contacts/incoming', async (req, res) => {
+  const rows = await db.all(`
+    SELECT c.id, u.id as requester_id, u.name
+    FROM contacts c JOIN profiles u ON u.id = c.user_id
     WHERE c.contact_user_id = ? AND c.status = 'pendiente'
-  `).all(user_id);
+  `, [req.userId]);
   res.json(rows);
 });
 
-app.delete('/api/contacts', (req, res) => {
-  const { user_id, contact_user_id } = req.body;
-  if (!user_id || !contact_user_id) return res.status(400).json({ error: 'user_id and contact_user_id are required' });
-  db.prepare('DELETE FROM contacts WHERE (user_id = ? AND contact_user_id = ?) OR (user_id = ? AND contact_user_id = ?)')
-    .run(user_id, contact_user_id, contact_user_id, user_id);
+app.delete('/api/contacts', async (req, res) => {
+  const { contact_user_id } = req.body;
+  if (!contact_user_id) return res.status(400).json({ error: 'contact_user_id is required' });
+  await db.run(`
+    DELETE FROM contacts WHERE (user_id = ? AND contact_user_id = ?) OR (user_id = ? AND contact_user_id = ?)
+  `, [req.userId, contact_user_id, contact_user_id, req.userId]);
   res.json({ ok: true });
 });
 
 // ---------- Invite codes ----------
 // Whoever creates a code becomes an accepted contact automatically of
-// whoever redeems it — no manual request/accept step needed for that pair.
+// whoever redeems it. Account creation itself now happens through Supabase
+// Auth signup (see the frontend login/signup screen), so redeeming a code is
+// always just "link me up with the person who shared this code."
 
 function generateInviteCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sin caracteres ambiguos
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous characters
   let code = '';
   for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
   return code;
 }
 
-app.post('/api/invites', (req, res) => {
-  const { user_id } = req.body;
-  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
+app.post('/api/invites', async (req, res) => {
   let code;
-  do { code = generateInviteCode(); } while (db.prepare('SELECT 1 FROM invites WHERE code = ?').get(code));
-  db.prepare('INSERT INTO invites (code, created_by) VALUES (?, ?)').run(code, user_id);
+  do { code = generateInviteCode(); } while (await db.get('SELECT 1 FROM invites WHERE code = ?', [code]));
+  await db.run('INSERT INTO invites (code, created_by) VALUES (?, ?)', [code, req.userId]);
   res.json({ code });
 });
 
-// Redeems a code by creating a brand-new account (used from the "New
-// account" flow, for someone who doesn't have a profile in this app yet).
-app.post('/api/invites/redeem', (req, res) => {
-  const { code, name, username, avatar_seed } = req.body;
-  if (!code || !name) return res.status(400).json({ error: 'code and name are required' });
-  const invite = db.prepare('SELECT * FROM invites WHERE code = ?').get(code.toUpperCase());
+app.post('/api/invites/redeem', async (req, res) => {
+  const { code } = req.body;
+  if (!code) return res.status(400).json({ error: 'code is required' });
+  const invite = await db.get('SELECT * FROM invites WHERE code = ?', [code.toUpperCase()]);
   if (!invite) return res.status(404).json({ error: 'Invalid invite code' });
   if (invite.used_by) return res.status(409).json({ error: 'This invite code was already used' });
+  if (invite.created_by === req.userId) return res.status(400).json({ error: "You can't redeem your own code" });
 
-  let newUser;
-  try {
-    const info = db.prepare('INSERT INTO users (name, username, avatar_seed) VALUES (?, ?, ?)')
-      .run(name, username || null, avatar_seed || username || name);
-    newUser = { id: info.lastInsertRowid, name, username, avatar_seed: avatar_seed || username || name };
-  } catch (err) {
-    if (String(err).includes('UNIQUE')) return res.status(409).json({ error: 'That username is already taken' });
-    throw err;
-  }
+  await db.run('UPDATE invites SET used_by = ?, used_at = now() WHERE id = ?', [req.userId, invite.id]);
+  await db.run(`INSERT INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, 'aceptado') ON CONFLICT (user_id, contact_user_id) DO UPDATE SET status = 'aceptado'`, [invite.created_by, req.userId]);
+  await db.run(`INSERT INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, 'aceptado') ON CONFLICT (user_id, contact_user_id) DO UPDATE SET status = 'aceptado'`, [req.userId, invite.created_by]);
 
-  db.prepare('UPDATE invites SET used_by = ?, used_at = datetime(\'now\') WHERE id = ?').run(newUser.id, invite.id);
-  db.prepare('INSERT OR IGNORE INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, ?)').run(invite.created_by, newUser.id, 'aceptado');
-  db.prepare('INSERT OR IGNORE INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, ?)').run(newUser.id, invite.created_by, 'aceptado');
-
-  res.json(newUser);
-});
-
-// Redeems a code for a user who already has a profile in this app: just
-// links the two accounts as accepted contacts, no new account is created.
-app.post('/api/invites/redeem-existing', (req, res) => {
-  const { code, user_id } = req.body;
-  if (!code || !user_id) return res.status(400).json({ error: 'code and user_id are required' });
-  const invite = db.prepare('SELECT * FROM invites WHERE code = ?').get(code.toUpperCase());
-  if (!invite) return res.status(404).json({ error: 'Invalid invite code' });
-  if (invite.used_by) return res.status(409).json({ error: 'This invite code was already used' });
-  if (invite.created_by === parseInt(user_id)) return res.status(400).json({ error: "You can't redeem your own code" });
-
-  db.prepare('UPDATE invites SET used_by = ?, used_at = datetime(\'now\') WHERE id = ?').run(user_id, invite.id);
-  db.prepare('INSERT OR IGNORE INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, ?)').run(invite.created_by, user_id, 'aceptado');
-  db.prepare('INSERT OR IGNORE INTO contacts (user_id, contact_user_id, status) VALUES (?, ?, ?)').run(user_id, invite.created_by, 'aceptado');
-
-  const creator = db.prepare('SELECT name FROM users WHERE id = ?').get(invite.created_by);
+  const creator = await db.get('SELECT name FROM profiles WHERE id = ?', [invite.created_by]);
   res.json({ ok: true, contactName: creator?.name || null });
 });
 
 // ---------- Dashboard / stats ----------
 
-function computeStats(user_id) {
-  const books = db.prepare(`
+async function computeStats(user_id) {
+  const books = await db.all(`
     SELECT ub.*, b.pages, b.authors, b.categories, b.language
     FROM user_books ub JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id = ?
-  `).all(user_id);
+  `, [user_id]);
 
   const leidos = books.filter(b => b.status === 'leido');
 
-  // Ritmo y volumen: agrupado por mes (usando end_date)
   const porMes = {};
   const paginasPorMes = {};
   for (const b of leidos) {
@@ -583,7 +507,6 @@ function computeStats(user_id) {
     return Math.round(total / conFechas.length);
   })();
 
-  // Gustos y patrones
   const contarCsv = (campo) => {
     const counts = {};
     for (const b of leidos) {
@@ -611,7 +534,6 @@ function computeStats(user_id) {
     return Math.min(...dias);
   })();
 
-  // Longest streak of consecutive calendar months with at least one finished book.
   const mesesConsecutivos = (() => {
     const meses = Object.keys(porMes).sort();
     if (!meses.length) return 0;
@@ -626,11 +548,10 @@ function computeStats(user_id) {
     return maxStreak;
   })();
 
-  // Metas y progreso
   const anioActual = new Date().getFullYear();
   const mesActual = String(new Date().getMonth() + 1).padStart(2, '0');
   const claveMesActual = `${anioActual}-${mesActual}`;
-  const meta = db.prepare('SELECT target_books, monthly_target FROM goals WHERE user_id = ? AND year = ?').get(user_id, anioActual);
+  const meta = await db.get('SELECT target_books, monthly_target FROM goals WHERE user_id = ? AND year = ?', [user_id, anioActual]);
   const leidosEsteAnio = leidos.filter(b => b.end_date && b.end_date.startsWith(String(anioActual))).length;
   const leidosEsteMes = porMes[claveMesActual] || 0;
 
@@ -658,35 +579,29 @@ function computeStats(user_id) {
   };
 }
 
-app.get('/api/stats', (req, res) => {
-  const { user_id } = req.query;
-  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
-  res.json(computeStats(user_id));
+app.get('/api/stats', async (req, res) => {
+  res.json(await computeStats(req.userId));
 });
 
-// What the user is reading right now, tagged with whether it's a personal
-// pick or something a book club of theirs is reading together.
-app.get('/api/reading-now', (req, res) => {
-  const { user_id } = req.query;
-  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
-
-  const rows = db.prepare(`
+app.get('/api/reading-now', async (req, res) => {
+  const rows = await db.all(`
     SELECT ub.id, ub.start_date, b.id as book_id, b.title, b.authors, b.cover_url, b.pages
     FROM user_books ub JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id = ? AND ub.status = 'leyendo'
     ORDER BY ub.start_date DESC
-  `).all(user_id);
+  `, [req.userId]);
 
-  const withClub = rows.map(r => {
-    const club = db.prepare(`
+  const withClub = [];
+  for (const r of rows) {
+    const club = await db.get(`
       SELECT bc.name FROM club_books cb
       JOIN book_clubs bc ON bc.id = cb.club_id
       JOIN club_members cm ON cm.club_id = cb.club_id
       WHERE cb.book_id = ? AND cm.user_id = ?
       LIMIT 1
-    `).get(r.book_id, user_id);
-    return { ...r, club_name: club ? club.name : null };
-  });
+    `, [r.book_id, req.userId]);
+    withClub.push({ ...r, club_name: club ? club.name : null });
+  }
 
   res.json(withClub);
 });
@@ -700,25 +615,15 @@ function shuffleArray(arr) {
   return a;
 }
 
-// Average publication year across the user's finished books — used to bias
-// recommendations toward books from roughly the same era as what they
-// actually read, instead of whatever Open Library happens to surface first
-// (which tends to be old, heavily-catalogued classics).
-function averageReadYear(user_id) {
-  const rows = db.prepare(`
+async function averageReadYear(user_id) {
+  const rows = await db.all(`
     SELECT b.published_year FROM user_books ub JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id = ? AND ub.status = 'leido' AND b.published_year IS NOT NULL
-  `).all(user_id);
+  `, [user_id]);
   if (!rows.length) return null;
   return Math.round(rows.reduce((sum, r) => sum + r.published_year, 0) / rows.length);
 }
 
-// Shared helper: pulls books tagged with a given subject/genre from Open
-// Library's subjects API (real category data, not a text search), optionally
-// filtering out titles the user already owns. When preferredYear is given,
-// results lean toward books published near that year without abandoning
-// variety entirely: most slots go to close-year matches, the rest are a
-// shuffled sample from the wider pool (including books with no known year).
 async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear) {
   const targetLimit = limit || 8;
   const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
@@ -755,25 +660,18 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
   }));
 }
 
-// Recommendations: looks at the user's top genre (from books they've read)
-// and pulls popular books in that subject from Open Library, filtering out
-// anything already in the user's library.
 app.get('/api/recommendations', async (req, res) => {
-  const { user_id } = req.query;
-  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
-
-  const stats = computeStats(user_id);
+  const stats = await computeStats(req.userId);
   const topGenre = stats.top_generos[0]?.[0];
   if (!topGenre) return res.json({ subject: null, books: [] });
 
-  const alreadyOwned = new Set(
-    db.prepare(`
-      SELECT LOWER(b.title) as t FROM user_books ub JOIN books b ON b.id = ub.book_id WHERE ub.user_id = ?
-    `).all(user_id).map(r => r.t)
-  );
+  const ownedRows = await db.all(`
+    SELECT LOWER(b.title) as t FROM user_books ub JOIN books b ON b.id = ub.book_id WHERE ub.user_id = ?
+  `, [req.userId]);
+  const alreadyOwned = new Set(ownedRows.map(r => r.t));
 
   try {
-    const preferredYear = averageReadYear(user_id);
+    const preferredYear = await averageReadYear(req.userId);
     const books = await fetchSubjectBooks(topGenre, alreadyOwned, 8, preferredYear);
     res.json({ subject: topGenre, books });
   } catch (err) {
@@ -782,267 +680,221 @@ app.get('/api/recommendations', async (req, res) => {
   }
 });
 
-// Browse by category: real subject-tagged results (Open Library subjects
-// API), used by the quick category chips in the search tab — not a text
-// search of the category name against titles. user_id is optional so the
-// same endpoint still works if it's ever called without one, but when
-// present it leans results toward the user's usual publication era.
 app.get('/api/browse', async (req, res) => {
-  const { category, user_id } = req.query;
+  const { category } = req.query;
   if (!category) return res.status(400).json({ error: 'category is required' });
   try {
-    const preferredYear = user_id ? averageReadYear(user_id) : null;
+    const preferredYear = await averageReadYear(req.userId);
     const books = await fetchSubjectBooks(category, null, 20, preferredYear);
     res.json(books);
   } catch (err) {
     console.error('Browse by category failed:', err.message);
-    res.status(502).json({ error: 'Could not reach Open Library. Check the server terminal for details.' });
+    res.status(502).json({ error: 'Could not reach Open Library. Check the server logs for details.' });
   }
 });
 
-// Comparativa social: solo entre contactos aceptados
-app.get('/api/compare', (req, res) => {
-  const { user_id, contact_user_id } = req.query;
-  if (!user_id || !contact_user_id) return res.status(400).json({ error: 'user_id and contact_user_id are required' });
+app.get('/api/compare', async (req, res) => {
+  const { contact_user_id } = req.query;
+  if (!contact_user_id) return res.status(400).json({ error: 'contact_user_id is required' });
 
-  const isContact = db.prepare(`
+  const isContact = await db.get(`
     SELECT 1 FROM contacts WHERE user_id = ? AND contact_user_id = ? AND status = 'aceptado'
-  `).get(user_id, contact_user_id);
+  `, [req.userId, contact_user_id]);
   if (!isContact) return res.status(403).json({ error: 'You can only compare with accepted contacts' });
 
-  const meLibros = db.prepare(`SELECT book_id FROM user_books WHERE user_id = ? AND status = 'leido'`).all(user_id).map(r => r.book_id);
-  const contactoLibros = db.prepare(`SELECT book_id FROM user_books WHERE user_id = ? AND status = 'leido'`).all(contact_user_id).map(r => r.book_id);
+  const meLibros = (await db.all(`SELECT book_id FROM user_books WHERE user_id = ? AND status = 'leido'`, [req.userId])).map(r => r.book_id);
+  const contactoLibros = (await db.all(`SELECT book_id FROM user_books WHERE user_id = ? AND status = 'leido'`, [contact_user_id])).map(r => r.book_id);
   const enComun = meLibros.filter(id => contactoLibros.includes(id));
   const comunInfo = enComun.length
-    ? db.prepare(`SELECT id, title FROM books WHERE id IN (${enComun.map(() => '?').join(',')})`).all(...enComun)
+    ? await db.all(`SELECT id, title FROM books WHERE id IN (${enComun.map(() => '?').join(',')})`, enComun)
     : [];
 
   res.json({
-    yo: computeStats(user_id),
-    contacto: computeStats(contact_user_id),
+    yo: await computeStats(req.userId),
+    contacto: await computeStats(contact_user_id),
     libros_en_comun: comunInfo
   });
 });
 
-// Feed de actividad: lo que tus contactos aceptados han leído/marcado
-// recientemente. Solo mira contactos aceptados, nunca a toda la base de usuarios.
-app.get('/api/feed', (req, res) => {
-  const { user_id } = req.query;
-  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
-
-  const contactIds = db.prepare(`
-    SELECT contact_user_id FROM contacts WHERE user_id = ? AND status = 'aceptado'
-  `).all(user_id).map(r => r.contact_user_id);
-
+app.get('/api/feed', async (req, res) => {
+  const contactRows = await db.all(`SELECT contact_user_id FROM contacts WHERE user_id = ? AND status = 'aceptado'`, [req.userId]);
+  const contactIds = contactRows.map(r => r.contact_user_id);
   if (!contactIds.length) return res.json([]);
 
   const placeholders = contactIds.map(() => '?').join(',');
-  const rows = db.prepare(`
+  const rows = await db.all(`
     SELECT ub.id, ub.status, ub.rating, ub.updated_at, ub.end_date, ub.start_date,
            u.id as user_id, u.name as user_name, u.username, u.avatar_seed,
            b.title, b.authors, b.cover_url, b.pages, b.categories
     FROM user_books ub
-    JOIN users u ON u.id = ub.user_id
+    JOIN profiles u ON u.id = ub.user_id
     JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id IN (${placeholders}) AND ub.status IN ('leido', 'leyendo')
     ORDER BY ub.updated_at DESC
     LIMIT 30
-  `).all(...contactIds);
+  `, contactIds);
 
   res.json(rows);
 });
 
 // ---------- Book Clubs ----------
 // Anyone can create a club and be found by name so contacts can join
-// directly (no approval step, mirroring how the user described it). Only
-// the owner can rename/describe the club, add/remove members, manage the
-// reading list, and set/remove weekly goals. Every member tracks their own
-// completion of each weekly goal so the group can see who's on pace.
+// directly (no approval step). Only the owner can rename/describe the club,
+// add/remove members, manage the reading list, and set/remove weekly goals.
+// Every member tracks their own completion of each weekly goal.
 
-function isClubMember(clubId, userId) {
-  return !!db.prepare('SELECT 1 FROM club_members WHERE club_id = ? AND user_id = ?').get(clubId, userId);
+async function isClubMember(clubId, userId) {
+  return !!(await db.get('SELECT 1 FROM club_members WHERE club_id = ? AND user_id = ?', [clubId, userId]));
 }
-function isClubOwner(clubId, userId) {
-  const club = db.prepare('SELECT owner_user_id FROM book_clubs WHERE id = ?').get(clubId);
-  return !!club && String(club.owner_user_id) === String(userId);
+async function isClubOwner(clubId, userId) {
+  const club = await db.get('SELECT owner_user_id FROM book_clubs WHERE id = ?', [clubId]);
+  return !!club && club.owner_user_id === userId;
 }
 
-// When a club's book becomes the current read, every member's own library
-// should reflect "reading" with a start date; when it's marked finished,
-// it should flip to "read" with an end date — without clobbering anyone who
-// already finished it (or started it) on their own before the club did.
-function syncClubBookToMemberLibraries(clubId, bookId, targetStatus, memberIds) {
+async function syncClubBookToMemberLibraries(clubId, bookId, targetStatus, memberIds) {
   const today = new Date().toISOString().slice(0, 10);
-  const members = memberIds || db.prepare('SELECT user_id FROM club_members WHERE club_id = ?').all(clubId).map(r => r.user_id);
+  const members = memberIds || (await db.all('SELECT user_id FROM club_members WHERE club_id = ?', [clubId])).map(r => r.user_id);
 
   for (const userId of members) {
-    const existing = db.prepare('SELECT * FROM user_books WHERE user_id = ? AND book_id = ?').get(userId, bookId);
+    const existing = await db.get('SELECT * FROM user_books WHERE user_id = ? AND book_id = ?', [userId, bookId]);
 
     if (targetStatus === 'leyendo') {
       if (!existing) {
-        db.prepare(`
-          INSERT INTO user_books (user_id, book_id, status, start_date) VALUES (?, ?, 'leyendo', ?)
-        `).run(userId, bookId, today);
+        await db.run(`INSERT INTO user_books (user_id, book_id, status, start_date) VALUES (?, ?, 'leyendo', ?)`, [userId, bookId, today]);
       } else if (existing.status === 'por_leer') {
-        db.prepare(`
-          UPDATE user_books SET status = 'leyendo', start_date = COALESCE(start_date, ?) WHERE id = ?
-        `).run(today, existing.id);
+        await db.run(`UPDATE user_books SET status = 'leyendo', start_date = COALESCE(start_date, ?) WHERE id = ?`, [today, existing.id]);
       }
-      // Already 'leyendo' or 'leido' on their own — leave it as-is.
     } else if (targetStatus === 'leido') {
       if (!existing) {
-        db.prepare(`
-          INSERT INTO user_books (user_id, book_id, status, start_date, end_date) VALUES (?, ?, 'leido', ?, ?)
-        `).run(userId, bookId, today, today);
+        await db.run(`INSERT INTO user_books (user_id, book_id, status, start_date, end_date) VALUES (?, ?, 'leido', ?, ?)`, [userId, bookId, today, today]);
       } else if (existing.status !== 'leido') {
-        db.prepare(`
-          UPDATE user_books SET status = 'leido', start_date = COALESCE(start_date, ?), end_date = ? WHERE id = ?
-        `).run(today, today, existing.id);
+        await db.run(`UPDATE user_books SET status = 'leido', start_date = COALESCE(start_date, ?), end_date = ? WHERE id = ?`, [today, today, existing.id]);
       }
-      // Already 'leido' — leave their own rating/dates untouched.
     }
   }
 }
 
-app.post('/api/clubs', (req, res) => {
-  const { user_id, name, description } = req.body;
-  if (!user_id || !name || !name.trim()) return res.status(400).json({ error: 'user_id and name are required' });
+app.post('/api/clubs', async (req, res) => {
+  const { name, description } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
 
-  const existing = db.prepare('SELECT id FROM book_clubs WHERE LOWER(name) = LOWER(?)').get(name.trim());
+  const existing = await db.get('SELECT id FROM book_clubs WHERE LOWER(name) = LOWER(?)', [name.trim()]);
   if (existing) return res.status(409).json({ error: 'A club with that name already exists' });
 
-  db.exec('BEGIN');
   try {
-    const info = db.prepare(`
-      INSERT INTO book_clubs (name, description, owner_user_id) VALUES (?, ?, ?)
-    `).run(name.trim(), description || null, user_id);
-    db.prepare(`
-      INSERT INTO club_members (club_id, user_id, role) VALUES (?, ?, 'owner')
-    `).run(info.lastInsertRowid, user_id);
-    db.exec('COMMIT');
-    res.json(db.prepare('SELECT * FROM book_clubs WHERE id = ?').get(info.lastInsertRowid));
+    const club = await db.withTransaction(async (tx) => {
+      const info = await tx.run('INSERT INTO book_clubs (name, description, owner_user_id) VALUES (?, ?, ?)', [name.trim(), description || null, req.userId]);
+      await tx.run(`INSERT INTO club_members (club_id, user_id, role) VALUES (?, ?, 'owner')`, [info.lastInsertRowid, req.userId]);
+      return tx.get('SELECT * FROM book_clubs WHERE id = ?', [info.lastInsertRowid]);
+    });
+    res.json(club);
   } catch (err) {
-    db.exec('ROLLBACK');
     res.status(500).json({ error: err.message });
   }
 });
 
-// Search clubs by (partial) name — how contacts find a club to join.
-app.get('/api/clubs/search', (req, res) => {
-  const { q, user_id } = req.query;
+app.get('/api/clubs/search', async (req, res) => {
+  const { q } = req.query;
   if (!q || !q.trim()) return res.json([]);
-  const rows = db.prepare(`
+  const rows = await db.all(`
     SELECT bc.*, (SELECT COUNT(*) FROM club_members cm WHERE cm.club_id = bc.id) as member_count
     FROM book_clubs bc
-    WHERE bc.name LIKE ?
+    WHERE bc.name ILIKE ?
     LIMIT 20
-  `).all(`%${q.trim()}%`);
-  const withMembership = rows.map(c => ({
-    ...c,
-    is_member: user_id ? isClubMember(c.id, user_id) : false
-  }));
+  `, [`%${q.trim()}%`]);
+  const withMembership = [];
+  for (const c of rows) withMembership.push({ ...c, is_member: await isClubMember(c.id, req.userId) });
   res.json(withMembership);
 });
 
-// Clubs the user already belongs to.
-app.get('/api/clubs', (req, res) => {
-  const { user_id } = req.query;
-  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
-  const rows = db.prepare(`
+app.get('/api/clubs', async (req, res) => {
+  const rows = await db.all(`
     SELECT bc.*, cm.role,
            (SELECT COUNT(*) FROM club_members cm2 WHERE cm2.club_id = bc.id) as member_count
     FROM club_members cm
     JOIN book_clubs bc ON bc.id = cm.club_id
     WHERE cm.user_id = ?
     ORDER BY bc.created_at DESC
-  `).all(user_id);
+  `, [req.userId]);
   res.json(rows);
 });
 
-app.post('/api/clubs/:id/join', (req, res) => {
-  const { user_id } = req.body;
-  const club = db.prepare('SELECT id FROM book_clubs WHERE id = ?').get(req.params.id);
+app.post('/api/clubs/:id/join', async (req, res) => {
+  const club = await db.get('SELECT id FROM book_clubs WHERE id = ?', [req.params.id]);
   if (!club) return res.status(404).json({ error: 'Club not found' });
-  if (isClubMember(club.id, user_id)) return res.status(409).json({ error: 'You are already a member of this club' });
-  db.prepare(`INSERT INTO club_members (club_id, user_id, role) VALUES (?, ?, 'member')`).run(club.id, user_id);
+  if (await isClubMember(club.id, req.userId)) return res.status(409).json({ error: 'You are already a member of this club' });
+  await db.run(`INSERT INTO club_members (club_id, user_id, role) VALUES (?, ?, 'member')`, [club.id, req.userId]);
 
-  // If the club is already mid-book, the new member should see it as
-  // "reading" in their own library right away, same as everyone else.
-  const currentBook = db.prepare(`SELECT book_id FROM club_books WHERE club_id = ? AND status = 'current'`).get(club.id);
-  if (currentBook) syncClubBookToMemberLibraries(club.id, currentBook.book_id, 'leyendo', [user_id]);
+  const currentBook = await db.get(`SELECT book_id FROM club_books WHERE club_id = ? AND status = 'current'`, [club.id]);
+  if (currentBook) await syncClubBookToMemberLibraries(club.id, currentBook.book_id, 'leyendo', [req.userId]);
 
   res.json({ ok: true });
 });
 
-app.post('/api/clubs/:id/leave', (req, res) => {
-  const { user_id } = req.body;
-  if (isClubOwner(req.params.id, user_id)) {
+app.post('/api/clubs/:id/leave', async (req, res) => {
+  if (await isClubOwner(req.params.id, req.userId)) {
     return res.status(400).json({ error: 'The owner cannot leave — delete the club instead' });
   }
-  db.prepare('DELETE FROM club_members WHERE club_id = ? AND user_id = ?').run(req.params.id, user_id);
+  await db.run('DELETE FROM club_members WHERE club_id = ? AND user_id = ?', [req.params.id, req.userId]);
   res.json({ ok: true });
 });
 
-app.patch('/api/clubs/:id', (req, res) => {
-  const { user_id, name, description } = req.body;
-  if (!isClubOwner(req.params.id, user_id)) return res.status(403).json({ error: 'Only the club owner can edit it' });
+app.patch('/api/clubs/:id', async (req, res) => {
+  const { name, description } = req.body;
+  if (!(await isClubOwner(req.params.id, req.userId))) return res.status(403).json({ error: 'Only the club owner can edit it' });
   if (name && name.trim()) {
-    const clash = db.prepare('SELECT id FROM book_clubs WHERE LOWER(name) = LOWER(?) AND id != ?').get(name.trim(), req.params.id);
+    const clash = await db.get('SELECT id FROM book_clubs WHERE LOWER(name) = LOWER(?) AND id != ?', [name.trim(), req.params.id]);
     if (clash) return res.status(409).json({ error: 'A club with that name already exists' });
   }
-  db.prepare(`
+  await db.run(`
     UPDATE book_clubs SET name = COALESCE(?, name), description = ? WHERE id = ?
-  `).run(name && name.trim() ? name.trim() : null, description ?? null, req.params.id);
-  res.json(db.prepare('SELECT * FROM book_clubs WHERE id = ?').get(req.params.id));
+  `, [name && name.trim() ? name.trim() : null, description ?? null, req.params.id]);
+  res.json(await db.get('SELECT * FROM book_clubs WHERE id = ?', [req.params.id]));
 });
 
-app.delete('/api/clubs/:id', (req, res) => {
-  const { user_id } = req.body;
-  if (!isClubOwner(req.params.id, user_id)) return res.status(403).json({ error: 'Only the club owner can delete it' });
-  db.prepare('DELETE FROM book_clubs WHERE id = ?').run(req.params.id);
+app.delete('/api/clubs/:id', async (req, res) => {
+  if (!(await isClubOwner(req.params.id, req.userId))) return res.status(403).json({ error: 'Only the club owner can delete it' });
+  await db.run('DELETE FROM book_clubs WHERE id = ?', [req.params.id]);
   res.json({ ok: true });
 });
 
-app.delete('/api/clubs/:id/members/:memberId', (req, res) => {
-  const { user_id } = req.body;
-  if (!isClubOwner(req.params.id, user_id)) return res.status(403).json({ error: 'Only the club owner can remove members' });
-  if (String(req.params.memberId) === String(user_id)) return res.status(400).json({ error: 'The owner cannot remove themself — delete the club instead' });
-  db.prepare('DELETE FROM club_members WHERE club_id = ? AND user_id = ?').run(req.params.id, req.params.memberId);
+app.delete('/api/clubs/:id/members/:memberId', async (req, res) => {
+  if (!(await isClubOwner(req.params.id, req.userId))) return res.status(403).json({ error: 'Only the club owner can remove members' });
+  if (req.params.memberId === req.userId) return res.status(400).json({ error: 'The owner cannot remove themself — delete the club instead' });
+  await db.run('DELETE FROM club_members WHERE club_id = ? AND user_id = ?', [req.params.id, req.params.memberId]);
   res.json({ ok: true });
 });
 
-// Full club detail: members, reading list, and weekly goals with each
-// member's completion — everything the club view needs in one call.
-app.get('/api/clubs/:id', (req, res) => {
-  const { user_id } = req.query;
-  const club = db.prepare('SELECT * FROM book_clubs WHERE id = ?').get(req.params.id);
+app.get('/api/clubs/:id', async (req, res) => {
+  const club = await db.get('SELECT * FROM book_clubs WHERE id = ?', [req.params.id]);
   if (!club) return res.status(404).json({ error: 'Club not found' });
-  if (!user_id || !isClubMember(club.id, user_id)) return res.status(403).json({ error: 'You are not a member of this club' });
+  if (!(await isClubMember(club.id, req.userId))) return res.status(403).json({ error: 'You are not a member of this club' });
 
-  const members = db.prepare(`
+  const members = await db.all(`
     SELECT u.id, u.name, u.username, u.avatar_seed, cm.role, cm.joined_at
-    FROM club_members cm JOIN users u ON u.id = cm.user_id
+    FROM club_members cm JOIN profiles u ON u.id = cm.user_id
     WHERE cm.club_id = ?
     ORDER BY cm.role DESC, cm.joined_at ASC
-  `).all(club.id);
+  `, [club.id]);
 
-  const books = db.prepare(`
+  const books = await db.all(`
     SELECT cb.id as club_book_id, cb.status, cb.created_at, b.*
     FROM club_books cb JOIN books b ON b.id = cb.book_id
     WHERE cb.club_id = ?
     ORDER BY (cb.status = 'current') DESC, cb.created_at DESC
-  `).all(club.id);
+  `, [club.id]);
 
-  const goalRows = db.prepare(`
+  const goalRows = await db.all(`
     SELECT cg.*, cb.book_id
     FROM club_goals cg LEFT JOIN club_books cb ON cb.id = cg.club_book_id
     WHERE cg.club_id = ?
     ORDER BY cg.week_start DESC, cg.created_at DESC
-  `).all(club.id);
+  `, [club.id]);
 
-  const goals = goalRows.map(g => {
-    const bookTitle = g.book_id ? db.prepare('SELECT title FROM books WHERE id = ?').get(g.book_id)?.title : null;
-    const progressRows = db.prepare('SELECT user_id, completed_at FROM club_goal_progress WHERE goal_id = ?').all(g.id);
+  const goals = [];
+  for (const g of goalRows) {
+    const bookTitle = g.book_id ? (await db.get('SELECT title FROM books WHERE id = ?', [g.book_id]))?.title : null;
+    const progressRows = await db.all('SELECT user_id, completed_at FROM club_goal_progress WHERE goal_id = ?', [g.id]);
     const completedIds = new Set(progressRows.map(p => p.user_id));
     const memberStatus = members.map(m => ({
       user_id: m.id,
@@ -1050,7 +902,7 @@ app.get('/api/clubs/:id', (req, res) => {
       avatar_seed: m.avatar_seed,
       completed: completedIds.has(m.id)
     }));
-    return {
+    goals.push({
       id: g.id,
       club_book_id: g.club_book_id,
       book_title: bookTitle,
@@ -1059,139 +911,119 @@ app.get('/api/clubs/:id', (req, res) => {
       members: memberStatus,
       completed_count: memberStatus.filter(m => m.completed).length,
       total_members: memberStatus.length
-    };
-  });
+    });
+  }
 
-  res.json({ ...club, my_role: members.find(m => m.id === Number(user_id))?.role || null, members, books, goals });
+  res.json({ ...club, my_role: members.find(m => m.id === req.userId)?.role || null, members, books, goals });
 });
 
-// Add a book to the club's reading list — used from the search tab's
-// "club mode" (findOrCreateBook keeps the shared catalog in sync).
 app.post('/api/clubs/:id/books', async (req, res) => {
-  const { user_id, book, status } = req.body;
-  if (!isClubOwner(req.params.id, user_id)) return res.status(403).json({ error: 'Only the club owner can add books' });
+  const { book, status } = req.body;
+  if (!(await isClubOwner(req.params.id, req.userId))) return res.status(403).json({ error: 'Only the club owner can add books' });
   if (!book) return res.status(400).json({ error: 'book is required' });
   book.api_id = book.api_id || `manual-${book.isbn || book.title}`;
   await enrichBook(book);
-  const bookRow = findOrCreateBook(book);
+  const bookRow = await findOrCreateBook(book);
 
   const desiredStatus = status === 'current' ? 'current' : 'upcoming';
   if (desiredStatus === 'current') {
-    db.prepare(`UPDATE club_books SET status = 'upcoming' WHERE club_id = ? AND status = 'current'`).run(req.params.id);
+    await db.run(`UPDATE club_books SET status = 'upcoming' WHERE club_id = ? AND status = 'current'`, [req.params.id]);
   }
-  db.prepare(`
+  await db.run(`
     INSERT INTO club_books (club_id, book_id, status, added_by) VALUES (?, ?, ?, ?)
-  `).run(req.params.id, bookRow.id, desiredStatus, user_id);
+  `, [req.params.id, bookRow.id, desiredStatus, req.userId]);
 
-  // Added straight in as the current book: reflect "reading" in every
-  // member's own library right away.
-  if (desiredStatus === 'current') syncClubBookToMemberLibraries(req.params.id, bookRow.id, 'leyendo');
+  if (desiredStatus === 'current') await syncClubBookToMemberLibraries(req.params.id, bookRow.id, 'leyendo');
 
   res.json({ ok: true });
 });
 
-app.patch('/api/clubs/:id/books/:clubBookId', (req, res) => {
-  const { user_id, status } = req.body;
-  if (!isClubOwner(req.params.id, user_id)) return res.status(403).json({ error: 'Only the club owner can update the reading list' });
+app.patch('/api/clubs/:id/books/:clubBookId', async (req, res) => {
+  const { status } = req.body;
+  if (!(await isClubOwner(req.params.id, req.userId))) return res.status(403).json({ error: 'Only the club owner can update the reading list' });
   if (!['current', 'upcoming', 'done'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
 
-  const clubBook = db.prepare('SELECT * FROM club_books WHERE id = ? AND club_id = ?').get(req.params.clubBookId, req.params.id);
+  const clubBook = await db.get('SELECT * FROM club_books WHERE id = ? AND club_id = ?', [req.params.clubBookId, req.params.id]);
   if (!clubBook) return res.status(404).json({ error: 'Book not found in this club' });
 
   if (status === 'current') {
-    db.prepare(`UPDATE club_books SET status = 'upcoming' WHERE club_id = ? AND status = 'current'`).run(req.params.id);
+    await db.run(`UPDATE club_books SET status = 'upcoming' WHERE club_id = ? AND status = 'current'`, [req.params.id]);
   }
-  db.prepare('UPDATE club_books SET status = ? WHERE id = ? AND club_id = ?').run(status, req.params.clubBookId, req.params.id);
+  await db.run('UPDATE club_books SET status = ? WHERE id = ? AND club_id = ?', [status, req.params.clubBookId, req.params.id]);
 
-  // Mirror the change into every member's personal library: start reading
-  // when it becomes current, mark it read (with an end date) once finished.
-  if (status === 'current') syncClubBookToMemberLibraries(req.params.id, clubBook.book_id, 'leyendo');
-  if (status === 'done') syncClubBookToMemberLibraries(req.params.id, clubBook.book_id, 'leido');
+  if (status === 'current') await syncClubBookToMemberLibraries(req.params.id, clubBook.book_id, 'leyendo');
+  if (status === 'done') await syncClubBookToMemberLibraries(req.params.id, clubBook.book_id, 'leido');
 
   res.json({ ok: true });
 });
 
-app.delete('/api/clubs/:id/books/:clubBookId', (req, res) => {
-  const { user_id } = req.body;
-  if (!isClubOwner(req.params.id, user_id)) return res.status(403).json({ error: 'Only the club owner can update the reading list' });
-  const clubBook = db.prepare('SELECT * FROM club_books WHERE id = ? AND club_id = ?').get(req.params.clubBookId, req.params.id);
+app.delete('/api/clubs/:id/books/:clubBookId', async (req, res) => {
+  if (!(await isClubOwner(req.params.id, req.userId))) return res.status(403).json({ error: 'Only the club owner can update the reading list' });
+  const clubBook = await db.get('SELECT * FROM club_books WHERE id = ? AND club_id = ?', [req.params.clubBookId, req.params.id]);
   if (!clubBook) return res.status(404).json({ error: 'Book not found in this club' });
 
-  // Weekly goals tied to this book stop making sense once it's gone.
-  db.prepare('DELETE FROM club_goals WHERE club_book_id = ?').run(req.params.clubBookId);
+  await db.run('DELETE FROM club_goals WHERE club_book_id = ?', [req.params.clubBookId]);
 
-  // It was only in members' libraries because the club picked it, so take it
-  // back out of everyone's library too when it's removed from the club.
-  const memberIds = db.prepare('SELECT user_id FROM club_members WHERE club_id = ?').all(req.params.id).map(r => r.user_id);
+  const memberIds = (await db.all('SELECT user_id FROM club_members WHERE club_id = ?', [req.params.id])).map(r => r.user_id);
   if (memberIds.length) {
     const placeholders = memberIds.map(() => '?').join(',');
-    db.prepare(`DELETE FROM user_books WHERE book_id = ? AND user_id IN (${placeholders})`).run(clubBook.book_id, ...memberIds);
+    await db.run(`DELETE FROM user_books WHERE book_id = ? AND user_id IN (${placeholders})`, [clubBook.book_id, ...memberIds]);
   }
 
-  db.prepare('DELETE FROM club_books WHERE id = ? AND club_id = ?').run(req.params.clubBookId, req.params.id);
+  await db.run('DELETE FROM club_books WHERE id = ? AND club_id = ?', [req.params.clubBookId, req.params.id]);
   res.json({ ok: true });
 });
 
-app.post('/api/clubs/:id/goals', (req, res) => {
-  const { user_id, club_book_id, description, week_start } = req.body;
-  if (!isClubOwner(req.params.id, user_id)) return res.status(403).json({ error: 'Only the club owner can set weekly goals' });
+app.post('/api/clubs/:id/goals', async (req, res) => {
+  const { club_book_id, description, week_start } = req.body;
+  if (!(await isClubOwner(req.params.id, req.userId))) return res.status(403).json({ error: 'Only the club owner can set weekly goals' });
   if (!description || !description.trim() || !week_start) return res.status(400).json({ error: 'description and week_start are required' });
 
-  const info = db.prepare(`
+  const info = await db.run(`
     INSERT INTO club_goals (club_id, club_book_id, description, week_start, created_by)
     VALUES (?, ?, ?, ?, ?)
-  `).run(req.params.id, club_book_id || null, description.trim(), week_start, user_id);
+  `, [req.params.id, club_book_id || null, description.trim(), week_start, req.userId]);
   res.json({ id: info.lastInsertRowid, ok: true });
 });
 
-app.delete('/api/clubs/:id/goals/:goalId', (req, res) => {
-  const { user_id } = req.body;
-  if (!isClubOwner(req.params.id, user_id)) return res.status(403).json({ error: 'Only the club owner can remove weekly goals' });
-  db.prepare('DELETE FROM club_goals WHERE id = ? AND club_id = ?').run(req.params.goalId, req.params.id);
+app.delete('/api/clubs/:id/goals/:goalId', async (req, res) => {
+  if (!(await isClubOwner(req.params.id, req.userId))) return res.status(403).json({ error: 'Only the club owner can remove weekly goals' });
+  await db.run('DELETE FROM club_goals WHERE id = ? AND club_id = ?', [req.params.goalId, req.params.id]);
   res.json({ ok: true });
 });
 
-// Each member marks their own progress — toggled independently of everyone else.
-app.post('/api/clubs/:id/goals/:goalId/complete', (req, res) => {
-  const { user_id } = req.body;
-  if (!isClubMember(req.params.id, user_id)) return res.status(403).json({ error: 'You are not a member of this club' });
-  db.prepare(`
-    INSERT OR IGNORE INTO club_goal_progress (goal_id, user_id) VALUES (?, ?)
-  `).run(req.params.goalId, user_id);
+app.post('/api/clubs/:id/goals/:goalId/complete', async (req, res) => {
+  if (!(await isClubMember(req.params.id, req.userId))) return res.status(403).json({ error: 'You are not a member of this club' });
+  await db.run(`
+    INSERT INTO club_goal_progress (goal_id, user_id) VALUES (?, ?) ON CONFLICT (goal_id, user_id) DO NOTHING
+  `, [req.params.goalId, req.userId]);
   res.json({ ok: true });
 });
 
-app.delete('/api/clubs/:id/goals/:goalId/complete', (req, res) => {
-  const { user_id } = req.body;
-  db.prepare('DELETE FROM club_goal_progress WHERE goal_id = ? AND user_id = ?').run(req.params.goalId, user_id);
+app.delete('/api/clubs/:id/goals/:goalId/complete', async (req, res) => {
+  await db.run('DELETE FROM club_goal_progress WHERE goal_id = ? AND user_id = ?', [req.params.goalId, req.userId]);
   res.json({ ok: true });
 });
 
 // ---------- Achievements ----------
-// Computed on the fly from stats + contacts + invites, no separate table to
-// keep in sync — badges just reflect whatever is true right now. Grouped
-// into categories, each ordered from easiest to hardest, with several that
-// are intentionally slow/hard to reach so the full set doesn't fill up fast.
-app.get('/api/achievements', (req, res) => {
-  const { user_id } = req.query;
-  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
 
-  const stats = computeStats(user_id);
-  const contactCount = db.prepare(`SELECT COUNT(*) as c FROM contacts WHERE user_id = ? AND status = 'aceptado'`).get(user_id).c;
+app.get('/api/achievements', async (req, res) => {
+  const stats = await computeStats(req.userId);
+  const contactCount = (await db.get(`SELECT COUNT(*) as c FROM contacts WHERE user_id = ? AND status = 'aceptado'`, [req.userId])).c;
   const genreCount = stats.top_generos.length;
   const yearGoalMet = stats.meta_anual && stats.leidos_este_anio >= stats.meta_anual;
   const overachiever = stats.meta_anual && stats.leidos_este_anio >= stats.meta_anual * 1.5;
 
-  const recruitedCount = db.prepare(`
+  const recruitedCount = (await db.get(`
     SELECT COUNT(*) as c FROM invites WHERE created_by = ? AND used_by IS NOT NULL
-  `).get(user_id).c;
+  `, [req.userId])).c;
 
-  const ratedCount = db.prepare(`
+  const ratedCount = (await db.get(`
     SELECT COUNT(*) as c FROM user_books WHERE user_id = ? AND status = 'leido' AND rating IS NOT NULL
-  `).get(user_id).c;
+  `, [req.userId])).c;
 
-  const user = db.prepare('SELECT created_at FROM users WHERE id = ?').get(user_id);
-  const accountDays = user ? Math.floor((Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60 * 24)) : 0;
+  const profile = await db.get('SELECT created_at FROM profiles WHERE id = ?', [req.userId]);
+  const accountDays = profile ? Math.floor((Date.now() - new Date(profile.created_at).getTime()) / (1000 * 60 * 60 * 24)) : 0;
 
   const categories = [
     {
@@ -1278,5 +1110,13 @@ app.get('/api/achievements', (req, res) => {
   res.json(categories);
 });
 
+// Errors thrown inside async route handlers above reject their promise;
+// Express 4 doesn't catch those automatically, so a small wrapper-free
+// safety net logs them instead of the process crashing silently.
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 const PORT = process.env.PORT || 3300;
-app.listen(PORT, () => console.log(`ReadTrack corriendo en http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`ReadTrack running on port ${PORT}`));

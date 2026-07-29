@@ -1,5 +1,12 @@
+// Real per-person auth via Supabase (email + password). `currentUser` is now
+// the Supabase auth user's uuid (matches profiles.id), and `currentProfile`
+// holds the app-specific fields (name, username, avatar_seed). The server
+// never trusts a user_id we send it — it always re-derives who's asking from
+// the session token attached to every request in api() below.
+const supabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+let session = null;
 let currentUser = null;
-let users = [];
+let currentProfile = null;
 let libraryFilter = 'todos';
 
 const CATEGORY_CHIPS = ['Fiction', 'Fantasy', 'Thriller', 'Mystery', 'Romance', 'History', 'Biography', 'Science', 'Adventure', 'Non-Fiction'];
@@ -74,7 +81,14 @@ function wireAvatarPicker(container) {
 }
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  const finalOpts = { ...opts, headers: { ...(opts?.headers || {}) } };
+  if (session?.access_token) finalOpts.headers['Authorization'] = `Bearer ${session.access_token}`;
+  const r = await fetch(path, finalOpts);
+  if (r.status === 401) {
+    // Session expired or was revoked — send the person back to the login screen.
+    await handleLoggedOut();
+    throw new Error('Your session expired — please log in again');
+  }
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
     throw new Error(err.error || 'Network error');
@@ -152,81 +166,100 @@ function confirmModal(title, message, onConfirm) {
   document.getElementById('confirmActionBtn').onclick = () => { closeModal(); onConfirm(); };
 }
 
-// ---------- Users ----------
+// ---------- Auth (login / signup) ----------
 
-async function loadUsers() {
-  users = await api('/api/users');
-  const sel = document.getElementById('userSelect');
-  sel.innerHTML = users.map(u => `<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('');
-  if (!currentUser || !users.find(u => u.id === currentUser)) currentUser = users[0]?.id;
-  sel.value = currentUser;
-  sel.onchange = () => { currentUser = parseInt(sel.value); updateHeaderForUser(); refreshCurrentView(); };
+let authMode = 'login';
 
-  updateHeaderForUser();
+function toggleAuthMode() {
+  authMode = authMode === 'login' ? 'signup' : 'login';
+  document.getElementById('auth_name_wrap').classList.toggle('hidden', authMode !== 'signup');
+  document.getElementById('auth_username_wrap').classList.toggle('hidden', authMode !== 'signup');
+  document.getElementById('authSubtitle').textContent = authMode === 'signup' ? 'Create your ReadTrack account.' : 'Log in to your account.';
+  document.getElementById('authSubmitBtn').textContent = authMode === 'signup' ? 'Sign up' : 'Log in';
+  document.getElementById('authToggleLead').textContent = authMode === 'signup' ? 'Already have an account?' : "Don't have an account?";
+  document.getElementById('authToggleBtn').textContent = authMode === 'signup' ? 'Log in' : 'Sign up';
+  document.getElementById('authError').classList.add('hidden');
 }
 
-function updateHeaderForUser() {
-  const u = users.find(u => u.id === currentUser);
-  document.getElementById('greetingName').textContent = ', ' + (u?.name || '');
-  document.getElementById('profileAvatar').src = avatarUrl(u?.avatar_seed || u?.username || u?.name);
+function showAuthError(msg) {
+  const el = document.getElementById('authError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
 }
 
-document.getElementById('newAccountBtn').onclick = () => {
-  openModal(`
-    <h3>Create a new account</h3>
-    <div class="modal-field">
-      <label>Name</label>
-      <input type="text" id="na_name" placeholder="e.g. Jamie Rivera">
-    </div>
-    <div class="modal-field">
-      <label>Choose a username</label>
-      <input type="text" id="na_username" placeholder="e.g. jamie_reads">
-    </div>
-    <div class="modal-field">
-      <label>Pick an avatar</label>
-      ${avatarPickerHtml(avatarValue(AVATAR_OPTIONS[Math.floor(Math.random() * AVATAR_OPTIONS.length)]), 'na_avatar')}
-    </div>
-    <div class="modal-field">
-      <label>Invite code (optional)</label>
-      <input type="text" id="na_code" placeholder="Got a code from a friend? Enter it here" style="text-transform:uppercase">
-    </div>
-    <div class="modal-actions">
-      <button class="secondary" onclick="closeModal()">Cancel</button>
-      <button class="primary" onclick="confirmNewAccount()">Create account</button>
-    </div>
-  `);
-  wireAvatarPicker(modalBox);
+async function submitAuthForm() {
+  const email = document.getElementById('auth_email').value.trim();
+  const password = document.getElementById('auth_password').value;
+  if (!email || !password) return showAuthError('Email and password are required');
+
+  document.getElementById('authSubmitBtn').disabled = true;
+  try {
+    if (authMode === 'signup') {
+      const name = document.getElementById('auth_name').value.trim();
+      const username = document.getElementById('auth_username').value.trim();
+      if (!name) { showAuthError('Name is required'); return; }
+      const { data, error } = await supabaseClient.auth.signUp({
+        email, password,
+        options: { data: { name, username: username || null } }
+      });
+      if (error) { showAuthError(error.message); return; }
+      if (!data.session) {
+        // Some Supabase projects require email confirmation before a session
+        // is issued — let the person know instead of appearing to hang.
+        showAuthError('Account created! Check your email to confirm it, then log in.');
+        authMode = 'signup';
+        toggleAuthMode();
+        return;
+      }
+      await onAuthenticated(data.session);
+    } else {
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) { showAuthError(error.message); return; }
+      await onAuthenticated(data.session);
+    }
+  } catch (e) {
+    showAuthError(e.message || 'Something went wrong');
+  } finally {
+    document.getElementById('authSubmitBtn').disabled = false;
+  }
+}
+
+async function onAuthenticated(newSession) {
+  session = newSession;
+  currentUser = session.user.id;
+  document.getElementById('authError').classList.add('hidden');
+  document.getElementById('authScreen').classList.add('hidden');
+  document.getElementById('appScreen').classList.remove('hidden');
+  await loadMyProfile();
+  showView('dashboard');
+}
+
+async function handleLoggedOut() {
+  session = null;
+  currentUser = null;
+  currentProfile = null;
+  document.getElementById('appScreen').classList.add('hidden');
+  document.getElementById('authScreen').classList.remove('hidden');
+}
+
+document.getElementById('logoutBtn').onclick = async () => {
+  await supabaseClient.auth.signOut();
+  await handleLoggedOut();
 };
 
-async function confirmNewAccount() {
-  const name = document.getElementById('na_name').value.trim();
-  const username = document.getElementById('na_username').value.trim();
-  const avatar_seed = document.getElementById('na_avatar').value;
-  const code = document.getElementById('na_code').value.trim();
-  if (!name) return showToast('Name is required');
-  try {
-    // If an invite code was provided, redeeming it both creates the account
-    // and links it as a contact of whoever shared the code, in one step.
-    const newUser = code
-      ? await api('/api/invites/redeem', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code, name, username: username || null, avatar_seed })
-        })
-      : await api('/api/users', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, username: username || null, avatar_seed })
-        });
-    closeModal();
-    showToast(`Welcome, ${newUser.name}!`);
-    await loadUsers();
-    currentUser = newUser.id;
-    document.getElementById('userSelect').value = currentUser;
-    updateHeaderForUser();
-    showView('dashboard');
-  } catch (e) {
-    showToast(e.message);
+async function loadMyProfile() {
+  currentProfile = await api('/api/profile');
+  document.getElementById('greetingName').textContent = ', ' + (currentProfile?.name || '');
+  document.getElementById('profileAvatar').src = avatarUrl(currentProfile?.avatar_seed || currentProfile?.username || currentProfile?.name);
+}
+
+async function initAuth() {
+  const { data } = await supabaseClient.auth.getSession();
+  if (data.session) {
+    await onAuthenticated(data.session);
+  } else {
+    document.getElementById('authScreen').classList.remove('hidden');
+    document.getElementById('appScreen').classList.add('hidden');
   }
 }
 
@@ -328,7 +361,7 @@ async function addBookToClub(index) {
     await api(`/api/clubs/${clubId}/books`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser, book, status: 'upcoming' })
+      body: JSON.stringify({ book, status: 'upcoming' })
     });
     showToast('Added to the club reading list');
     window.__clubModeClubId = null;
@@ -361,7 +394,7 @@ async function browseCategory(category) {
   container.innerHTML = '<p class="empty-state">Loading...</p>';
   let results;
   try {
-    results = await api(`/api/browse?category=${encodeURIComponent(category)}&user_id=${currentUser}`);
+    results = await api(`/api/browse?category=${encodeURIComponent(category)}`);
   } catch (e) {
     container.innerHTML = `<p class="empty-state">${escapeHtml(e.message)}</p>`;
     return;
@@ -375,7 +408,7 @@ async function loadRecommended() {
   const container = document.getElementById('recommended');
   if (window.__clubModeClubId) { section.classList.add('hidden'); return; } // keep the search tab focused on the club pick
   try {
-    const data = await api(`/api/recommendations?user_id=${currentUser}`);
+    const data = await api(`/api/recommendations`);
     if (!data.subject || !data.books.length) { section.classList.add('hidden'); return; }
     section.classList.remove('hidden');
     document.getElementById('recommendedLabel').textContent = `Recommended for you — based on ${data.subject}`;
@@ -495,7 +528,7 @@ async function confirmAdd(index, fromRecommended) {
   book.categories = document.getElementById('m_categories').value.trim() || null;
   const status = document.getElementById('m_status').value;
   const rating = parseInt(document.getElementById('m_rating').value) || null;
-  const payload = { user_id: currentUser, book, status };
+  const payload = { book, status };
   if (status === 'leido' || status === 'leyendo') payload.start_date = document.getElementById('m_start').value || null;
   if (status === 'leido') {
     payload.rating = rating;
@@ -528,7 +561,7 @@ document.querySelectorAll('#libraryFilters .chip').forEach(chip => {
 let libraryCache = [];
 
 async function loadLibrary() {
-  libraryCache = await api(`/api/user-books?user_id=${currentUser}`);
+  libraryCache = await api(`/api/user-books`);
   renderLibrary();
   if (!document.getElementById('library-calendar-view').classList.contains('hidden')) renderLibraryCalendar();
 }
@@ -864,10 +897,10 @@ async function clearSchedule(userBookId) {
 // ---------- Dashboard ----------
 
 async function loadDashboard() {
-  document.getElementById('greetingName').textContent = ', ' + (users.find(u => u.id === currentUser)?.name || '');
+  document.getElementById('greetingName').textContent = ', ' + (currentProfile?.name || '');
   const [stats, readingNow] = await Promise.all([
-    api(`/api/stats?user_id=${currentUser}`),
-    api(`/api/reading-now?user_id=${currentUser}`)
+    api(`/api/stats`),
+    api(`/api/reading-now`)
   ]);
   const container = document.getElementById('dashboard');
   const progress = stats.meta_anual ? Math.min(100, Math.round((stats.leidos_este_anio / stats.meta_anual) * 100)) : null;
@@ -1040,7 +1073,10 @@ async function loadSocial() {
 
 function timeAgo(dateStr) {
   if (!dateStr) return '';
-  const diffMs = Date.now() - new Date(dateStr.replace(' ', 'T') + 'Z');
+  // Postgres timestamps come back from the API as proper ISO 8601 strings
+  // (e.g. "2026-07-29T18:35:14.000Z"), which every browser's Date parses
+  // natively — no string surgery needed like the old SQLite format required.
+  const diffMs = Date.now() - new Date(dateStr);
   const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
   if (days <= 0) return 'today';
   if (days === 1) return 'yesterday';
@@ -1049,7 +1085,7 @@ function timeAgo(dateStr) {
 }
 
 async function loadFeed() {
-  const rows = await api(`/api/feed?user_id=${currentUser}`);
+  const rows = await api(`/api/feed`);
   const container = document.getElementById('feed');
   if (!rows.length) {
     container.innerHTML = '<p class="empty-state">No updates yet. Add contacts to see their activity here.</p>';
@@ -1097,7 +1133,7 @@ document.getElementById('addContactBtn').onclick = async () => {
     await api('/api/contacts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser, contact_username: username })
+      body: JSON.stringify({ contact_username: username })
     });
     document.getElementById('usernameInput').value = '';
     showToast('Request sent');
@@ -1108,7 +1144,7 @@ document.getElementById('addContactBtn').onclick = async () => {
 };
 
 async function loadContacts() {
-  const rows = await api(`/api/contacts?user_id=${currentUser}`);
+  const rows = await api(`/api/contacts`);
   const container = document.getElementById('contactsList');
   container.innerHTML = rows.map(c => `
     <div class="contact-row">
@@ -1116,13 +1152,13 @@ async function loadContacts() {
         <span class="avatar">${initials(c.name)}</span>
         <span>${escapeHtml(c.name)}${c.status === 'pendiente' ? ' <span class="status-badge por_leer">pending</span>' : ''}</span>
       </div>
-      <button class="danger" onclick="removeContact(${c.contact_user_id})">Remove</button>
+      <button class="danger" onclick="removeContact('${c.contact_user_id}')">Remove</button>
     </div>
   `).join('') || '<p class="empty-state">No contacts yet. Add one above.</p>';
 }
 
 async function loadIncoming() {
-  const rows = await api(`/api/contacts/incoming?user_id=${currentUser}`);
+  const rows = await api(`/api/contacts/incoming`);
   const container = document.getElementById('incomingRequests');
   if (!rows.length) { container.innerHTML = ''; return; }
   container.innerHTML = `
@@ -1146,7 +1182,7 @@ async function removeContact(contactUserId) {
   await api('/api/contacts', {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: currentUser, contact_user_id: contactUserId })
+    body: JSON.stringify({ contact_user_id: contactUserId })
   });
   showToast('Contact removed');
   loadContacts();
@@ -1180,7 +1216,7 @@ async function confirmCreateClub() {
     const club = await api('/api/clubs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser, name, description: description || null })
+      body: JSON.stringify({ name, description: description || null })
     });
     closeModal();
     showToast('Club created');
@@ -1191,7 +1227,7 @@ async function confirmCreateClub() {
 }
 
 async function loadMyClubs() {
-  const rows = await api(`/api/clubs?user_id=${currentUser}`);
+  const rows = await api(`/api/clubs`);
   const container = document.getElementById('myClubsList');
   container.innerHTML = rows.map(c => `
     <div class="club-row" onclick="openClubDetail(${c.id})">
@@ -1212,7 +1248,7 @@ async function searchClubs() {
   const container = document.getElementById('clubSearchResults');
   if (!q) { container.innerHTML = ''; return; }
   container.innerHTML = '<p class="empty-state">Searching...</p>';
-  const rows = await api(`/api/clubs/search?q=${encodeURIComponent(q)}&user_id=${currentUser}`);
+  const rows = await api(`/api/clubs/search?q=${encodeURIComponent(q)}`);
   container.innerHTML = rows.map(c => `
     <div class="club-row">
       <div class="club-row-icon">📚</div>
@@ -1232,7 +1268,7 @@ async function joinClub(clubId) {
     await api(`/api/clubs/${clubId}/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser })
+      body: JSON.stringify({})
     });
     showToast('Joined the club!');
     openClubDetail(clubId);
@@ -1256,7 +1292,7 @@ async function loadClubDetail() {
   if (!clubId) { showView('social'); return; }
   let club;
   try {
-    club = await api(`/api/clubs/${clubId}?user_id=${currentUser}`);
+    club = await api(`/api/clubs/${clubId}`);
   } catch (e) {
     showToast(e.message);
     showView('social');
@@ -1286,7 +1322,7 @@ async function loadClubDetail() {
         <div class="club-member-card">
           <img src="${avatarUrl(m.avatar_seed || m.username || m.name)}" alt="">
           <p>${escapeHtml(m.name)}${m.role === 'owner' ? ' <span class="status-badge leido">owner</span>' : ''}</p>
-          ${isOwner && m.role !== 'owner' ? `<button class="danger small" onclick="removeClubMember(${m.id})">Remove</button>` : ''}
+          ${isOwner && m.role !== 'owner' ? `<button class="danger small" onclick="removeClubMember('${m.id}')">Remove</button>` : ''}
         </div>
       `).join('')}
     </div>
@@ -1350,7 +1386,7 @@ async function loadClubDetail() {
 }
 
 function openEditClubModal() {
-  api(`/api/clubs/${window.__currentClubId}?user_id=${currentUser}`).then(club => {
+  api(`/api/clubs/${window.__currentClubId}`).then(club => {
     openModal(`
       <h3>Edit club</h3>
       <div class="modal-field">
@@ -1376,7 +1412,7 @@ async function confirmEditClub() {
     await api(`/api/clubs/${window.__currentClubId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser, name, description })
+      body: JSON.stringify({ name, description })
     });
     closeModal();
     showToast('Club updated');
@@ -1391,7 +1427,7 @@ function confirmDeleteClub() {
     await api(`/api/clubs/${window.__currentClubId}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser })
+      body: JSON.stringify({})
     });
     showToast('Club deleted');
     showView('social');
@@ -1404,7 +1440,7 @@ function confirmLeaveClub() {
     await api(`/api/clubs/${window.__currentClubId}/leave`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser })
+      body: JSON.stringify({})
     });
     showToast('You left the club');
     showView('social');
@@ -1417,7 +1453,7 @@ function removeClubMember(memberUserId) {
     await api(`/api/clubs/${window.__currentClubId}/members/${memberUserId}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser })
+      body: JSON.stringify({})
     });
     showToast('Member removed');
     loadClubDetail();
@@ -1434,7 +1470,7 @@ async function setClubBookStatus(clubBookId, status) {
     await api(`/api/clubs/${window.__currentClubId}/books/${clubBookId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser, status })
+      body: JSON.stringify({ status })
     });
     loadClubDetail();
   } catch (e) {
@@ -1447,14 +1483,14 @@ function removeClubBook(clubBookId) {
     await api(`/api/clubs/${window.__currentClubId}/books/${clubBookId}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser })
+      body: JSON.stringify({})
     });
     loadClubDetail();
   });
 }
 
 async function openAddGoalModal() {
-  const club = await api(`/api/clubs/${window.__currentClubId}?user_id=${currentUser}`);
+  const club = await api(`/api/clubs/${window.__currentClubId}`);
   const today = new Date().toISOString().slice(0, 10);
   const currentBook = club.books.find(b => b.status === 'current');
   openModal(`
@@ -1490,7 +1526,7 @@ async function confirmAddGoal() {
     await api(`/api/clubs/${window.__currentClubId}/goals`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser, description, week_start, club_book_id })
+      body: JSON.stringify({ description, week_start, club_book_id })
     });
     closeModal();
     showToast('Weekly goal created');
@@ -1505,7 +1541,7 @@ function removeClubGoal(goalId) {
     await api(`/api/clubs/${window.__currentClubId}/goals/${goalId}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser })
+      body: JSON.stringify({})
     });
     loadClubDetail();
   });
@@ -1515,7 +1551,7 @@ async function toggleGoalComplete(goalId, isCurrentlyDone) {
   await api(`/api/clubs/${window.__currentClubId}/goals/${goalId}/complete`, {
     method: isCurrentlyDone ? 'DELETE' : 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: currentUser })
+    body: JSON.stringify({})
   });
   loadClubDetail();
 }
@@ -1527,7 +1563,7 @@ document.getElementById('inviteBtn').onclick = async () => {
     const { code } = await api('/api/invites', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser })
+      body: JSON.stringify({})
     });
     openModal(`
       <h3>Invite a friend</h3>
@@ -1561,10 +1597,10 @@ async function confirmJoin() {
   const code = document.getElementById('j_code').value.trim();
   if (!code) return showToast('Code is required');
   try {
-    const result = await api('/api/invites/redeem-existing', {
+    const result = await api('/api/invites/redeem', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, user_id: currentUser })
+      body: JSON.stringify({ code })
     });
     closeModal();
     showToast(result.contactName ? `You're now connected with ${result.contactName}!` : 'Contact added!');
@@ -1580,15 +1616,16 @@ document.getElementById('profileBtn').onclick = () => showView('profile');
 
 async function loadProfile() {
   const container = document.getElementById('profileContent');
-  const u = users.find(x => x.id === currentUser);
+  currentProfile = await api('/api/profile');
+  const u = currentProfile;
   const year = new Date().getFullYear();
   let goal = null;
   try {
-    goal = await api(`/api/goals?user_id=${currentUser}&year=${year}`);
+    goal = await api(`/api/goals?year=${year}`);
   } catch (e) { /* no goal set yet */ }
   let categories = [];
   try {
-    categories = await api(`/api/achievements?user_id=${currentUser}`);
+    categories = await api(`/api/achievements`);
   } catch (e) { /* ignore */ }
   const totalBadges = categories.reduce((sum, c) => sum + c.badges.length, 0);
   const totalAchieved = categories.reduce((sum, c) => sum + c.badges.filter(b => b.achieved).length, 0);
@@ -1646,17 +1683,18 @@ async function saveProfile(year) {
     api('/api/goals', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: currentUser, year, target_books, monthly_target })
+      body: JSON.stringify({ year, target_books, monthly_target })
     }),
-    api(`/api/users/${currentUser}`, {
+    api('/api/profile', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ avatar_seed })
     })
   ]);
+  currentProfile = { ...currentProfile, avatar_seed };
+  document.getElementById('profileAvatar').src = avatarUrl(avatar_seed);
   showToast('Profile saved');
-  await loadUsers();
   refreshCurrentView('profile');
 }
 
-loadUsers().then(() => showView('dashboard'));
+initAuth();

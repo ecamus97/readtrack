@@ -9,11 +9,21 @@
 // Query helpers accept `?` placeholders (like the old sqlite code did) and
 // convert them to Postgres's `$1, $2, ...` style automatically, so the SQL in
 // server.js reads the same as before wherever possible.
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 
 if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL is not set. Copy .env.example to .env and fill in your Supabase connection string.');
 }
+
+// By default node-postgres parses `date` columns into JS Date objects, but
+// all of our date logic (computeStats month-keys, the calendar view, etc.)
+// was written against plain 'YYYY-MM-DD' strings, same as node:sqlite always
+// returned. Disabling that parsing keeps every existing `.slice(0,7)` /
+// `.startsWith(...)` / string-comparison call working unchanged. (OID 1082 =
+// date). timestamptz columns (created_at, etc.) are left as native Date
+// objects — those serialize to proper ISO strings in JSON responses, which
+// is what we want for anything the frontend just displays via `new Date(...)`.
+types.setTypeParser(1082, (val) => val);
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
