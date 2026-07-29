@@ -597,19 +597,22 @@ select {
      bottom nav visibly jump. Freezing the document itself and moving all
      scrolling into #appScreen instead (as its own scroll container) means
      the page never scrolls, so there's nothing to trigger that jump. */
-  html, body { height: 100%; overflow: hidden; }
+  html, body {
+    height: 100vh;
+    height: 100dvh; /* single source of truth for the viewport height — a child */
+    overflow: hidden; /* also computing its own 100dvh could round differently */
+    margin: 0;
+  }
   #appScreen {
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    height: 100dvh;
+    height: 100%; /* inherits body's already-resolved dvh instead of recomputing it */
   }
   /* html/body no longer scroll (see above), so the login/signup screen needs
      its own scroll capability in case its content is ever taller than a
      small phone's viewport (e.g. keyboard open + validation error shown). */
   .auth-screen {
-    height: 100vh;
-    height: 100dvh;
+    height: 100%; /* inherits body's dvh instead of recomputing it separately */
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
   }
