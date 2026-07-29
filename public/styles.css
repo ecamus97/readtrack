@@ -878,3 +878,13 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
   font-size: 14px;
   text-align: center;
 }
+
+.auth-success {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--primary-light);
+  color: var(--primary-dark);
+  font-size: 14px;
+  text-align: center;
+}

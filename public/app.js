@@ -178,7 +178,86 @@ function toggleAuthMode() {
   document.getElementById('authSubmitBtn').textContent = authMode === 'signup' ? 'Sign up' : 'Log in';
   document.getElementById('authToggleLead').textContent = authMode === 'signup' ? 'Already have an account?' : "Don't have an account?";
   document.getElementById('authToggleBtn').textContent = authMode === 'signup' ? 'Log in' : 'Sign up';
+  document.getElementById('forgotPasswordRow').classList.toggle('hidden', authMode === 'signup');
   document.getElementById('authError').classList.add('hidden');
+}
+
+// ---------- Forgot / reset password ----------
+
+function showForgotForm() {
+  document.getElementById('authFormView').classList.add('hidden');
+  document.getElementById('resetFormView').classList.add('hidden');
+  document.getElementById('forgotFormView').classList.remove('hidden');
+  document.getElementById('authSubtitle').textContent = 'Reset your password';
+  document.getElementById('authError').classList.add('hidden');
+  document.getElementById('forgotSuccess').classList.add('hidden');
+}
+
+function showLoginForm() {
+  document.getElementById('forgotFormView').classList.add('hidden');
+  document.getElementById('resetFormView').classList.add('hidden');
+  document.getElementById('authFormView').classList.remove('hidden');
+  authMode = 'login';
+  document.getElementById('authSubtitle').textContent = 'Log in to your account.';
+  document.getElementById('authSubmitBtn').textContent = 'Log in';
+  document.getElementById('authToggleLead').textContent = "Don't have an account?";
+  document.getElementById('authToggleBtn').textContent = 'Sign up';
+  document.getElementById('auth_name_wrap').classList.add('hidden');
+  document.getElementById('auth_username_wrap').classList.add('hidden');
+  document.getElementById('forgotPasswordRow').classList.remove('hidden');
+  document.getElementById('authError').classList.add('hidden');
+}
+
+async function requestPasswordReset() {
+  const email = document.getElementById('forgot_email').value.trim();
+  if (!email) return showAuthError('Enter your email');
+  document.getElementById('forgotSubmitBtn').disabled = true;
+  document.getElementById('forgotSuccess').classList.add('hidden');
+  document.getElementById('authError').classList.add('hidden');
+  try {
+    // Where Supabase's email link sends the person back to, with a one-time
+    // recovery token in the URL — window.location.origin so this works both
+    // locally and on whatever the deployed URL happens to be.
+    const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin
+    });
+    if (error) { showAuthError(error.message); return; }
+    const successEl = document.getElementById('forgotSuccess');
+    successEl.textContent = "If that email has an account, we've sent a reset link to it.";
+    successEl.classList.remove('hidden');
+  } catch (e) {
+    showAuthError(e.message || 'Something went wrong');
+  } finally {
+    document.getElementById('forgotSubmitBtn').disabled = false;
+  }
+}
+
+function showResetPasswordForm() {
+  document.getElementById('authFormView').classList.add('hidden');
+  document.getElementById('forgotFormView').classList.add('hidden');
+  document.getElementById('resetFormView').classList.remove('hidden');
+  document.getElementById('authSubtitle').textContent = 'Set a new password';
+  document.getElementById('authScreen').classList.remove('hidden');
+  document.getElementById('appScreen').classList.add('hidden');
+}
+
+async function submitNewPassword() {
+  const pw = document.getElementById('reset_password').value;
+  if (!pw || pw.length < 6) return showAuthError('Password must be at least 6 characters');
+  document.getElementById('resetSubmitBtn').disabled = true;
+  try {
+    const { error } = await supabaseClient.auth.updateUser({ password: pw });
+    if (error) { showAuthError(error.message); return; }
+    // Drop the one-time recovery token from the URL so refreshing the page
+    // doesn't try to reuse it.
+    window.history.replaceState({}, document.title, window.location.pathname);
+    await onAuthenticated(session);
+    showToast('Password updated');
+  } catch (e) {
+    showAuthError(e.message || 'Something went wrong');
+  } finally {
+    document.getElementById('resetSubmitBtn').disabled = false;
+  }
 }
 
 function showAuthError(msg) {
@@ -253,8 +332,29 @@ async function loadMyProfile() {
   document.getElementById('profileAvatar').src = avatarUrl(currentProfile?.avatar_seed || currentProfile?.username || currentProfile?.name);
 }
 
+// Clicking the "reset password" link in the email lands back here with a
+// one-time token in the URL (#access_token=...&type=recovery). Supabase-js
+// picks that up automatically and fires a PASSWORD_RECOVERY event — we catch
+// it here so we show the "set a new password" screen instead of dropping the
+// person straight into the app.
+const isPasswordRecoveryLink = window.location.hash.includes('type=recovery');
+
+supabaseClient.auth.onAuthStateChange((event, newSession) => {
+  if (event === 'PASSWORD_RECOVERY') {
+    session = newSession;
+    showResetPasswordForm();
+  }
+});
+
 async function initAuth() {
   const { data } = await supabaseClient.auth.getSession();
+  if (isPasswordRecoveryLink) {
+    // The PASSWORD_RECOVERY listener above handles showing the reset form —
+    // don't fall through to the normal logged-in view even if a session
+    // already exists at this point.
+    if (data.session) { session = data.session; showResetPasswordForm(); }
+    return;
+  }
   if (data.session) {
     await onAuthenticated(data.session);
   } else {

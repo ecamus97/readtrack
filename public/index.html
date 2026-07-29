@@ -36,28 +36,56 @@
       </div>
       <p class="subtitle" id="authSubtitle">Log in to your account.</p>
 
-      <div class="modal-field hidden" id="auth_name_wrap">
-        <label>Name</label>
-        <input type="text" id="auth_name" placeholder="e.g. Jamie Rivera">
-      </div>
-      <div class="modal-field hidden" id="auth_username_wrap">
-        <label>Choose a username</label>
-        <input type="text" id="auth_username" placeholder="e.g. jamie_reads">
-      </div>
-      <div class="modal-field">
-        <label>Email</label>
-        <input type="email" id="auth_email" placeholder="you@example.com">
-      </div>
-      <div class="modal-field">
-        <label>Password</label>
-        <input type="password" id="auth_password" placeholder="••••••••">
+      <div id="authFormView">
+        <div class="modal-field hidden" id="auth_name_wrap">
+          <label>Name</label>
+          <input type="text" id="auth_name" placeholder="e.g. Jamie Rivera">
+        </div>
+        <div class="modal-field hidden" id="auth_username_wrap">
+          <label>Choose a username</label>
+          <input type="text" id="auth_username" placeholder="e.g. jamie_reads">
+        </div>
+        <div class="modal-field">
+          <label>Email</label>
+          <input type="email" id="auth_email" placeholder="you@example.com">
+        </div>
+        <div class="modal-field">
+          <label>Password</label>
+          <input type="password" id="auth_password" placeholder="••••••••">
+        </div>
+
+        <button class="primary auth-submit" id="authSubmitBtn" onclick="submitAuthForm()">Log in</button>
+        <p class="auth-toggle" id="forgotPasswordRow">
+          <button class="link-btn" onclick="showForgotForm()">Forgot your password?</button>
+        </p>
+        <p class="auth-toggle">
+          <span id="authToggleLead">Don't have an account?</span>
+          <button class="link-btn" id="authToggleBtn" onclick="toggleAuthMode()">Sign up</button>
+        </p>
       </div>
 
-      <button class="primary auth-submit" id="authSubmitBtn" onclick="submitAuthForm()">Log in</button>
-      <p class="auth-toggle">
-        <span id="authToggleLead">Don't have an account?</span>
-        <button class="link-btn" id="authToggleBtn" onclick="toggleAuthMode()">Sign up</button>
-      </p>
+      <div id="forgotFormView" class="hidden">
+        <p class="subtitle" style="margin-top:0">Enter your email and we'll send you a link to reset your password.</p>
+        <div class="modal-field">
+          <label>Email</label>
+          <input type="email" id="forgot_email" placeholder="you@example.com">
+        </div>
+        <button class="primary auth-submit" id="forgotSubmitBtn" onclick="requestPasswordReset()">Send reset link</button>
+        <p class="auth-toggle">
+          <button class="link-btn" onclick="showLoginForm()">Back to log in</button>
+        </p>
+        <p class="auth-success hidden" id="forgotSuccess"></p>
+      </div>
+
+      <div id="resetFormView" class="hidden">
+        <p class="subtitle" style="margin-top:0">Choose a new password for your account.</p>
+        <div class="modal-field">
+          <label>New password</label>
+          <input type="password" id="reset_password" placeholder="••••••••">
+        </div>
+        <button class="primary auth-submit" id="resetSubmitBtn" onclick="submitNewPassword()">Save new password</button>
+      </div>
+
       <p class="auth-error hidden" id="authError"></p>
     </div>
   </div>

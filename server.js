@@ -26,6 +26,11 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Unauthenticated, does nothing but confirm the process is up — point an
+// uptime pinger (e.g. UptimeRobot) here every few minutes so Render's free
+// tier doesn't spin the service down between visits.
+app.get('/health', (req, res) => res.status(200).json({ ok: true }));
+
 // Every /api/* route requires a valid Supabase session from here on — the
 // server figures out who's asking from the verified token (req.userId),
 // it never trusts a user_id the client sends. This is the core change from
