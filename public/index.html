@@ -14,7 +14,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=9">
+<link rel="stylesheet" href="styles.css?v=10">
 <!-- 100dvh should track the real visible viewport, but iOS Safari doesn't
      always re-run that calculation when its address bar hides/reappears
      (no resize/scroll event fires in every case) — the layout can be left
@@ -272,14 +272,17 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
   <script src="app.js?v=8"></script>
 
-  <!-- Diagnostic overlay — TEMPORARILY FORCED ON (no ?debug=1 needed) so it
-       shows up in the installed home-screen app too: iOS keeps Home Screen
-       web apps in a separate storage partition from Safari for the same
-       site, so a flag set via localStorage in Safari doesn't carry over to
-       the installed icon, which is why it never appeared there before.
-       Revert this back to a real on/off flag once the layout bug is found. -->
+  <!-- Diagnostic overlay: add ?debug=1 to the URL once (in Safari OR inside
+       the installed app itself — e.g. by typing it in Safari's URL bar
+       while the installed app happens to load that same page during
+       testing) to turn it on; it's remembered from then on via localStorage.
+       Add ?debug=0 to turn it back off. Confirmed working: the bottom-nav
+       "gap" investigated with this tool turned out to be the iOS safe-area
+       (home indicator) reservation, not a layout bug. -->
   <script>
-    if (true) {
+    if (location.search.includes('debug=1')) localStorage.setItem('__debug', '1');
+    if (location.search.includes('debug=0')) localStorage.removeItem('__debug');
+    if (location.search.includes('debug=1') || localStorage.getItem('__debug') === '1') {
       window.addEventListener('load', () => {
         setInterval(() => {
           const panel = document.getElementById('__debugPanel') || (() => {
