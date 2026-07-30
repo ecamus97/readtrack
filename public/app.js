@@ -577,6 +577,15 @@ function toggleStatusFields(selectEl, prefix) {
   document.getElementById(`${prefix}_rating_wrap`).classList.toggle('hidden', status !== 'leido');
   document.getElementById(`${prefix}_start_wrap`).classList.toggle('hidden', !(status === 'leyendo' || status === 'leido'));
   document.getElementById(`${prefix}_end_wrap`).classList.toggle('hidden', status !== 'leido');
+  // Moving a book to "Reading"/"Read" reveals the start date field — if it
+  // doesn't already have one (e.g. it was sitting in "To Read"), default it
+  // to today instead of leaving it blank. An empty native date input shows
+  // as a greyed-out placeholder until tapped, which looked broken/unset even
+  // though the field was working fine.
+  const startInput = document.getElementById(`${prefix}_start`);
+  if ((status === 'leyendo' || status === 'leido') && startInput && !startInput.value) {
+    startInput.value = new Date().toISOString().slice(0, 10);
+  }
 }
 
 async function openAddModal(index, fromRecommended) {
