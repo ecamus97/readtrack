@@ -272,11 +272,17 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
   <script src="app.js?v=8"></script>
 
-  <!-- Diagnostic overlay: add ?debug=1 to the URL to show real on-device
-       measurements (viewport size, computed styles, scroll info) as
-       readable on-screen text — for screenshotting instead of guessing. -->
+  <!-- Diagnostic overlay: add ?debug=1 to the URL (in Safari) once to show
+       real on-device measurements as readable on-screen text — for
+       screenshotting instead of guessing. The installed home-screen icon
+       always launches at "/" with no query string, so ?debug=1 alone would
+       never show up there — we also persist the flag in localStorage the
+       first time it's set, so it keeps showing even when launched from the
+       home-screen icon. Add ?debug=0 to turn it back off. -->
   <script>
-    if (location.search.includes('debug=1')) {
+    if (location.search.includes('debug=1')) localStorage.setItem('__debug', '1');
+    if (location.search.includes('debug=0')) localStorage.removeItem('__debug');
+    if (location.search.includes('debug=1') || localStorage.getItem('__debug') === '1') {
       window.addEventListener('load', () => {
         setInterval(() => {
           const panel = document.getElementById('__debugPanel') || (() => {
@@ -290,6 +296,8 @@
           const rect = (sel) => { const n = el(sel); if (!n) return 'not found'; const r = n.getBoundingClientRect(); const cs = getComputedStyle(n); return `top=${r.top.toFixed(0)} bottom=${r.bottom.toFixed(0)} h=${r.height.toFixed(0)} scrollH=${n.scrollHeight} overflowY=${cs.overflowY} display=${cs.display} order=${cs.order} position=${cs.position} paddingBottom=${cs.paddingBottom}`; };
           const appHeightVar = getComputedStyle(document.documentElement).getPropertyValue('--app-height');
           panel.textContent = [
+            `display-mode standalone=${window.matchMedia('(display-mode: standalone)').matches}`,
+            `navigator.standalone=${window.navigator.standalone}`,
             `window.innerHeight=${window.innerHeight}`,
             `visualViewport.height=${window.visualViewport ? window.visualViewport.height.toFixed(0) : 'n/a'}`,
             `visualViewport.offsetTop=${window.visualViewport ? window.visualViewport.offsetTop.toFixed(0) : 'n/a'}`,
