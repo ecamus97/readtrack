@@ -14,7 +14,30 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=8">
+<link rel="stylesheet" href="styles.css?v=9">
+<!-- 100dvh should track the real visible viewport, but iOS Safari doesn't
+     always re-run that calculation when its address bar hides/reappears
+     (no resize/scroll event fires in every case) — the layout can be left
+     sized to a stale, smaller height, leaving real blank space at the
+     bottom once the address bar retracts and more room becomes available.
+     Computing it ourselves from visualViewport (which iOS DOES reliably
+     update) and re-checking on every resize/scroll/orientation change is
+     the standard, robust fix for this. See --app-height usage in styles.css. -->
+<script>
+  (function () {
+    function setAppHeight() {
+      var h = (window.visualViewport ? window.visualViewport.height : window.innerHeight);
+      document.documentElement.style.setProperty('--app-height', h + 'px');
+    }
+    setAppHeight();
+    window.addEventListener('resize', setAppHeight);
+    window.addEventListener('orientationchange', setAppHeight);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', setAppHeight);
+      window.visualViewport.addEventListener('scroll', setAppHeight);
+    }
+  })();
+</script>
 </head>
 <body>
   <!-- The anon key is meant to be public (it's what every Supabase JS-SDK
