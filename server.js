@@ -349,7 +349,7 @@ app.post('/api/user-books', async (req, res) => {
 app.get('/api/user-books', async (req, res) => {
   const rows = await db.all(`
     SELECT ub.id, ub.status, ub.rating, ub.notes, ub.start_date, ub.end_date,
-           ub.planned_start_date, ub.planned_end_date,
+           ub.planned_start_date, ub.planned_end_date, ub.progress_percent,
            b.id as book_id, b.title, b.authors, b.cover_url, b.pages, b.published_year, b.categories, b.language
     FROM user_books ub JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id = ?
@@ -368,16 +368,26 @@ app.patch('/api/user-books/:id', async (req, res) => {
   const owned = await loadOwnedUserBook(req.params.id, req.userId);
   if (!owned) return res.status(404).json({ error: 'Not found' });
 
-  const { status, rating, notes, start_date, end_date, planned_start_date, planned_end_date } = req.body;
+  let { status, rating, notes, start_date, end_date, planned_start_date, planned_end_date, progress_percent } = req.body;
+
+  // Dragging the reading-progress slider to 100% finishes the book — flip it
+  // to "read" (with today as the finish date, unless one was already set)
+  // instead of making the person separately go change the status too.
+  const resultingStatus = status !== undefined ? status : owned.status;
+  if (progress_percent === 100 && resultingStatus === 'leyendo' && status === undefined) {
+    status = 'leido';
+    if (end_date === undefined && !owned.end_date) end_date = new Date().toISOString().slice(0, 10);
+  }
+
   const fields = [];
   const values = [];
-  for (const [k, v] of Object.entries({ status, rating, notes, start_date, end_date, planned_start_date, planned_end_date })) {
+  for (const [k, v] of Object.entries({ status, rating, notes, start_date, end_date, planned_start_date, planned_end_date, progress_percent })) {
     if (v !== undefined) { fields.push(`${k} = ?`); values.push(v); }
   }
   if (!fields.length) return res.status(400).json({ error: 'nothing to update' });
   values.push(req.params.id);
   await db.run(`UPDATE user_books SET ${fields.join(', ')} WHERE id = ?`, values);
-  res.json({ ok: true });
+  res.json({ ok: true, autoCompleted: status === 'leido' && resultingStatus === 'leyendo' && progress_percent === 100 });
 });
 
 app.delete('/api/user-books/:id', async (req, res) => {
@@ -616,7 +626,8 @@ app.get('/api/stats', async (req, res) => {
 
 app.get('/api/reading-now', async (req, res) => {
   const rows = await db.all(`
-    SELECT ub.id, ub.start_date, b.id as book_id, b.title, b.authors, b.cover_url, b.pages
+    SELECT ub.id, ub.start_date, ub.progress_percent, b.id as book_id, b.title, b.authors, b.cover_url, b.pages,
+           b.published_year, b.categories, ub.rating
     FROM user_books ub JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id = ? AND ub.status = 'leyendo'
     ORDER BY ub.start_date DESC

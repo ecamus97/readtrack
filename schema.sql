@@ -49,10 +49,17 @@ create table if not exists user_books (
   end_date date,
   planned_start_date date,
   planned_end_date date,
+  progress_percent integer not null default 0 check (progress_percent between 0 and 100),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (user_id, book_id)
 );
+
+-- Safe to re-run against an already-created table (adds the column if this
+-- schema was applied before progress_percent existed).
+alter table user_books add column if not exists progress_percent integer not null default 0;
+alter table user_books drop constraint if exists user_books_progress_percent_check;
+alter table user_books add constraint user_books_progress_percent_check check (progress_percent between 0 and 100);
 
 create or replace function set_updated_at() returns trigger as $$
 begin

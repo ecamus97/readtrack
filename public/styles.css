@@ -977,3 +977,22 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
 @media (max-width: 640px) {
   .header-username { display: none; } /* header is tight on mobile — name still shows on the Home greeting */
 }
+
+/* ---------- Minimal book cards (Library / Search / Recommended) ---------- */
+.book-card-minimal h3 { margin-top: 6px; }
+.book-card-minimal p { margin-bottom: 2px; }
+
+/* ---------- Reading progress (Home / Currently reading) ---------- */
+.reading-progress-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.reading-progress-bar {
+  flex: 1;
+  height: 6px;
+  margin-top: 0;
+  background: var(--border);
+}
+.reading-progress-pct {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--primary-dark);
+  white-space: nowrap;
+}

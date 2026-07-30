@@ -14,7 +14,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=4">
+<link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
   <!-- The anon key is meant to be public (it's what every Supabase JS-SDK
@@ -247,7 +247,7 @@
   </div> <!-- #appScreen -->
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
 
   <!-- Diagnostic overlay: add ?debug=1 to the URL to show real on-device
        measurements (viewport size, computed styles, scroll info) as
@@ -259,7 +259,7 @@
           const panel = document.getElementById('__debugPanel') || (() => {
             const el = document.createElement('div');
             el.id = '__debugPanel';
-            el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:rgba(0,0,0,0.92);color:#0f0;font:10px/1.4 monospace;padding:8px;max-height:60vh;overflow:auto;white-space:pre-wrap;';
+            el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:rgba(0,0,0,0.92);color:#0f0;font:10px/1.4 monospace;padding:8px;max-height:40vh;overflow:auto;white-space:pre-wrap;pointer-events:none;';
             document.body.appendChild(el);
             return el;
           })();

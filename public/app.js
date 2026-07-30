@@ -426,19 +426,44 @@ function bookCoverHtml(cover_url) {
     : `<span class="placeholder">📕</span>`;
 }
 
-function renderBookGrid(books) {
-  const clubMode = !!window.__clubModeClubId;
+// Minimal card: cover + title + author only. All the detail (year, pages,
+// categories) and the actual "add" action live behind tapping the cover, in
+// showBookPreview() below — keeps the grid clean and scannable.
+function renderBookGrid(books, source) {
   return books.map((b, i) => `
-    <div class="card">
-      <div class="cover-wrap">${bookCoverHtml(b.cover_url)}</div>
+    <div class="card book-card-minimal">
+      <div class="cover-wrap clickable" onclick="showBookPreview(${i}, '${source}')">${bookCoverHtml(b.cover_url)}</div>
       <h3>${escapeHtml(b.title)}</h3>
       <p>${escapeHtml(b.authors) || 'Unknown author'}</p>
-      <p>${b.published_year || '—'} · ${b.pages || '?'} pages${b.categories ? ' · ' + escapeHtml(b.categories) : ''}</p>
-      ${clubMode
-        ? `<button class="primary" onclick="addBookToClub(${i})">+ Add to club</button>`
-        : `<button class="primary" onclick="openAddModal(${i}, false)">+ Add to my library</button>`}
     </div>
   `).join('') || '<p class="empty-state">No results. Try another search term.</p>';
+}
+
+function showBookPreview(index, source) {
+  const arr = source === 'rec' ? window.__recommendedCache : window.__searchCache;
+  const b = arr[index];
+  if (!b) return;
+  const clubMode = !!window.__clubModeClubId;
+  openModal(`
+    <div class="detail-header">
+      <div class="cover-wrap detail-cover">${bookCoverHtml(b.cover_url)}</div>
+      <div>
+        <h3>${escapeHtml(b.title)}</h3>
+        <p>${escapeHtml(b.authors) || 'Unknown author'}</p>
+      </div>
+    </div>
+    <ul class="detail-list">
+      <li><span>Publication year</span><strong>${b.published_year || '—'}</strong></li>
+      <li><span>Pages</span><strong>${b.pages || '—'}</strong></li>
+      <li><span>Categories</span><strong>${escapeHtml(b.categories) || '—'}</strong></li>
+    </ul>
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal()">Close</button>
+      ${clubMode
+        ? `<button class="primary" onclick="closeModal(); addBookToClub(${index})">+ Add to club</button>`
+        : `<button class="primary" onclick="closeModal(); openAddModal(${index}, ${source === 'rec'})">+ Add to my library</button>`}
+    </div>
+  `);
 }
 
 function updateClubModeBanner() {
@@ -492,7 +517,7 @@ async function doSearch() {
     return;
   }
   window.__searchCache = results;
-  container.innerHTML = renderBookGrid(results);
+  container.innerHTML = renderBookGrid(results, 'search');
 }
 
 async function browseCategory(category) {
@@ -506,7 +531,7 @@ async function browseCategory(category) {
     return;
   }
   window.__searchCache = results;
-  container.innerHTML = renderBookGrid(results);
+  container.innerHTML = renderBookGrid(results, 'search');
 }
 
 async function loadRecommended() {
@@ -519,15 +544,7 @@ async function loadRecommended() {
     section.classList.remove('hidden');
     document.getElementById('recommendedLabel').textContent = `Recommended for you — based on ${data.subject}`;
     window.__recommendedCache = data.books;
-    container.innerHTML = data.books.map((b, i) => `
-      <div class="card">
-        <div class="cover-wrap">${bookCoverHtml(b.cover_url)}</div>
-        <h3>${escapeHtml(b.title)}</h3>
-        <p>${escapeHtml(b.authors) || 'Unknown author'}</p>
-        <p>${b.published_year || '—'}</p>
-        <button class="primary" onclick="openAddModal(${i}, true)">+ Add to my library</button>
-      </div>
-    `).join('');
+    container.innerHTML = renderBookGrid(data.books, 'rec');
   } catch (e) {
     section.classList.add('hidden');
   }
@@ -677,18 +694,16 @@ async function loadLibrary() {
   if (!document.getElementById('library-calendar-view').classList.contains('hidden')) renderLibraryCalendar();
 }
 
+// Minimal card: cover + title + author. Status, rating, dates, and the
+// "Change status" action all live in the detail view now — tap the cover.
 function renderLibrary() {
   const rows = libraryFilter === 'todos' ? libraryCache : libraryCache.filter(b => b.status === libraryFilter);
   const container = document.getElementById('library');
-  const statusLabel = { por_leer: 'To Read', leyendo: 'Reading', leido: 'Read' };
   container.innerHTML = rows.map(b => `
-    <div class="card clickable" onclick="openBookDetail(${b.id})">
+    <div class="card book-card-minimal clickable" onclick="openBookDetail(${b.id})">
       <div class="cover-wrap">${bookCoverHtml(b.cover_url)}</div>
       <h3>${escapeHtml(b.title)}</h3>
       <p>${escapeHtml(b.authors) || ''}</p>
-      <span class="status-badge ${b.status}">${statusLabel[b.status]}</span>
-      ${b.status === 'leido' && b.rating ? `<p>⭐ ${b.rating}/5</p>` : ''}
-      <button class="secondary" onclick="event.stopPropagation(); openStatusModal(${b.id}, '${b.status}', ${b.rating || 'null'})">Change status</button>
     </div>
   `).join('') || '<p class="empty-state">You don\'t have any books in this category yet.</p>';
 }
@@ -1020,6 +1035,7 @@ async function loadDashboard() {
     container.innerHTML = `<p class="empty-state">Couldn't load your dashboard: ${escapeHtml(e.message)}</p>`;
     return;
   }
+  window.__readingNowCache = readingNow;
   const progress = stats.meta_anual ? Math.min(100, Math.round((stats.leidos_este_anio / stats.meta_anual) * 100)) : null;
   const monthProgress = stats.meta_mensual ? Math.min(100, Math.round((stats.leidos_este_mes / stats.meta_mensual) * 100)) : null;
 
@@ -1031,11 +1047,15 @@ async function loadDashboard() {
       <div class="reading-now-grid">
         ${readingNow.map(b => `
           <div class="reading-now-card">
-            <div class="cover-wrap reading-now-cover">${bookCoverHtml(b.cover_url)}</div>
+            <div class="cover-wrap reading-now-cover clickable" onclick="openReadingNowDetail(${b.id})">${bookCoverHtml(b.cover_url)}</div>
             <div class="reading-now-body">
               <p class="reading-now-title">${escapeHtml(b.title)}</p>
-              <p class="reading-now-meta">${escapeHtml(b.authors) || 'Unknown author'}${b.pages ? ' · ' + b.pages + ' pages' : ''}</p>
+              <p class="reading-now-meta">${escapeHtml(b.authors) || 'Unknown author'}</p>
               <span class="status-badge ${b.club_name ? 'leyendo' : 'por_leer'}">${b.club_name ? `📚 ${escapeHtml(b.club_name)}` : '👤 Individual'}</span>
+              <div class="reading-progress-row">
+                <div class="progress-bar reading-progress-bar"><div class="progress-bar-fill" style="width:${b.progress_percent || 0}%"></div></div>
+                <button class="link-btn reading-progress-pct" onclick="openProgressModal(${b.id}, ${b.progress_percent || 0})">${b.progress_percent || 0}%</button>
+              </div>
             </div>
           </div>
         `).join('') || '<p class="empty-state">You\'re not reading anything right now. Head to Search & Add to start a book.</p>'}
@@ -1169,6 +1189,64 @@ function renderDashboardCharts(stats) {
       scales: { y: { beginAtZero: true, grid: { color: primaryLight } }, x: { grid: { display: false } } }
     }
   });
+}
+
+function openReadingNowDetail(id) {
+  const b = (window.__readingNowCache || []).find(x => x.id === id);
+  if (!b) return;
+  openModal(`
+    <div class="detail-header">
+      <div class="cover-wrap detail-cover">${bookCoverHtml(b.cover_url)}</div>
+      <div>
+        <h3>${escapeHtml(b.title)}</h3>
+        <p>${escapeHtml(b.authors) || 'Unknown author'}</p>
+        <span class="status-badge leyendo">Reading</span>
+      </div>
+    </div>
+    <ul class="detail-list">
+      <li><span>Publication year</span><strong>${b.published_year || '—'}</strong></li>
+      <li><span>Pages</span><strong>${b.pages || '—'}</strong></li>
+      <li><span>Categories</span><strong>${escapeHtml(b.categories) || '—'}</strong></li>
+      <li><span>Start date</span><strong>${b.start_date || '—'}</strong></li>
+      <li><span>Progress</span><strong>${b.progress_percent || 0}%</strong></li>
+    </ul>
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal()">Close</button>
+      <button class="primary" onclick="closeModal(); openProgressModal(${b.id}, ${b.progress_percent || 0})">Update progress</button>
+    </div>
+  `);
+}
+
+function openProgressModal(userBookId, current) {
+  openModal(`
+    <h3>Update reading progress</h3>
+    <div class="modal-field">
+      <label>Progress: <span id="progress_display">${current}</span>%</label>
+      <input type="range" id="progress_input" min="0" max="100" step="1" value="${current}"
+             oninput="document.getElementById('progress_display').textContent = this.value" style="width:100%">
+    </div>
+    <p class="settings-hint">Reaching 100% automatically marks this book as read.</p>
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal()">Cancel</button>
+      <button class="primary" onclick="confirmProgressUpdate(${userBookId})">Save</button>
+    </div>
+  `);
+}
+
+async function confirmProgressUpdate(userBookId) {
+  const value = parseInt(document.getElementById('progress_input').value);
+  try {
+    const result = await api(`/api/user-books/${userBookId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ progress_percent: value })
+    });
+    closeModal();
+    showToast(result.autoCompleted ? 'Nice! Marked as read 🎉' : 'Progress updated');
+    loadDashboard();
+  } catch (e) {
+    showToast(e.message);
+  }
 }
 
 // ---------- Social ----------
