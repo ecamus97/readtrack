@@ -705,24 +705,22 @@ async function libraryTaste(user_id) {
 async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear, yearFrom, yearTo) {
   const targetLimit = limit || 8;
   const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
-  // Fetch a bigger pool than we need (10x instead of 5x) — a hard year-range
-  // filter can throw away most of a subject's results (OpenLibrary subjects
-  // skew old), so we need enough candidates left over for the requested
-  // range to still return a full page of results.
-  const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 10}`, 5000);
+
+  // OpenLibrary's subjects endpoint supports filtering by year range itself
+  // via `published_in` — letting it do the filtering server-side is both
+  // correct (fetching a big page and filtering client-side kept missing
+  // matches entirely, since that subject's first N results skew heavily
+  // toward old public-domain classics and a recent-decade filter could zero
+  // them all out) and cheaper (no need to over-fetch a huge, slow page).
+  let url = `https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`;
+  if (yearFrom || yearTo) {
+    url += `&published_in=${yearFrom || 1000}-${yearTo || new Date().getFullYear()}`;
+  }
+  const r = await fetchWithTimeout(url, 8000);
   if (!r.ok) return [];
   const data = await r.json();
   let candidates = (data.works || [])
     .filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
-
-  if (yearFrom || yearTo) {
-    candidates = candidates.filter(w => {
-      if (!w.first_publish_year) return false;
-      if (yearFrom && w.first_publish_year < yearFrom) return false;
-      if (yearTo && w.first_publish_year > yearTo) return false;
-      return true;
-    });
-  }
 
   let selected;
   if (preferredYear) {
