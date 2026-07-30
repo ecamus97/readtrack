@@ -702,36 +702,63 @@ async function libraryTaste(user_id) {
   return { topGenres, avgYear };
 }
 
+// OpenLibrary's /subjects/{x}.json?published_in=Y-Z looked like the right
+// tool for year filtering, but it turned out to filter by EDITION publish
+// date, not the work's original one — a reissue/reprint of a centuries-old
+// classic can easily have a 2020s edition, so "published_in=2020-2029" was
+// happily returning things like Don Quixote. The actual original-publication
+// year lives in `first_publish_year`, which is only queryable via the
+// search API's Solr-style range syntax (first_publish_year:[X TO Y]), not
+// the subjects endpoint — so year-filtered browsing goes through
+// search.json instead, and the plain subjects endpoint is only used when no
+// year filter is requested.
 async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear, yearFrom, yearTo) {
   const targetLimit = limit || 8;
-  const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
+  let candidates;
 
-  // OpenLibrary's subjects endpoint supports filtering by year range itself
-  // via `published_in` — letting it do the filtering server-side is both
-  // correct (fetching a big page and filtering client-side kept missing
-  // matches entirely, since that subject's first N results skew heavily
-  // toward old public-domain classics and a recent-decade filter could zero
-  // them all out) and cheaper (no need to over-fetch a huge, slow page).
-  let url = `https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`;
   if (yearFrom || yearTo) {
-    url += `&published_in=${yearFrom || 1000}-${yearTo || new Date().getFullYear()}`;
+    const from = yearFrom || 1000;
+    const to = yearTo || new Date().getFullYear();
+    const q = `subject:"${subjectName}" AND first_publish_year:[${from} TO ${to}]`;
+    const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${targetLimit * 3}&fields=key,title,author_name,cover_i,first_publish_year`;
+    const r = await fetchWithTimeout(url, 8000);
+    if (!r.ok) return [];
+    const data = await r.json();
+    candidates = (data.docs || [])
+      .filter(d => !excludeTitles || !excludeTitles.has((d.title || '').toLowerCase()))
+      .map(d => ({
+        key: d.key,
+        title: d.title,
+        authors: (d.author_name || []).map(name => ({ name })),
+        cover_id: d.cover_i,
+        first_publish_year: d.first_publish_year
+      }));
+  } else {
+    const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
+    const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`, 8000);
+    if (!r.ok) return [];
+    const data = await r.json();
+    candidates = (data.works || [])
+      .filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
   }
-  const r = await fetchWithTimeout(url, 8000);
-  if (!r.ok) return [];
-  const data = await r.json();
-  let candidates = (data.works || [])
-    .filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
 
   let selected;
   if (preferredYear) {
     const withYear = candidates.filter(w => w.first_publish_year);
     const withoutYear = candidates.filter(w => !w.first_publish_year);
-    withYear.sort((a, b) => Math.abs(a.first_publish_year - preferredYear) - Math.abs(b.first_publish_year - preferredYear));
+    // Only ever consider books reasonably close to the user's actual era —
+    // recommendations used to fill the remaining ~40% of results with a
+    // random shuffle of whatever didn't make the "close" cut, which could
+    // (and did) include books decades away from anything the user reads.
+    // Falls back to the full set only if the strict window leaves too few.
+    const maxAgeGap = 40;
+    let relevant = withYear.filter(w => Math.abs(w.first_publish_year - preferredYear) <= maxAgeGap);
+    if (relevant.length < targetLimit) relevant = withYear;
+    relevant.sort((a, b) => Math.abs(a.first_publish_year - preferredYear) - Math.abs(b.first_publish_year - preferredYear));
 
-    const closeCount = Math.min(withYear.length, Math.ceil(targetLimit * 0.6));
-    const close = withYear.slice(0, closeCount);
-    const rest = shuffleArray([...withYear.slice(closeCount), ...withoutYear]);
-    selected = shuffleArray([...close, ...rest.slice(0, Math.max(0, targetLimit - close.length))]);
+    const pool = relevant.slice(0, targetLimit * 2);
+    const fillers = relevant.length >= targetLimit ? [] : shuffleArray(withoutYear).slice(0, targetLimit - relevant.length);
+    selected = [...shuffleArray(pool), ...fillers];
   } else if (!yearFrom && !yearTo) {
     // No signal about the user's era preference at all, and no explicit year
     // filter requested — default to the most recently published books
@@ -811,7 +838,11 @@ app.get('/api/browse', async (req, res) => {
 app.get('/api/popular', async (req, res) => {
   const { category } = req.query;
   const q = category ? `subject:${category}` : 'subject:fiction';
-  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&orderBy=newest&maxResults=40`);
+  // orderBy=relevance (Google's default ranking, which leans toward
+  // well-known/discussed books) gives a pool that's actually likely to have
+  // real ratings, unlike orderBy=newest, which mostly surfaces obscure
+  // brand-new listings (barely anyone has rated those yet either).
+  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&orderBy=relevance&maxResults=40`);
   try {
     const r = await fetchWithTimeout(url, 5000);
     const data = await r.json();
@@ -840,7 +871,15 @@ app.get('/api/popular', async (req, res) => {
           averageRating: info.averageRating || 0
         };
       })
-      .filter(b => !b.published_year || b.published_year >= currentYear - 6);
+      .filter(b => !b.published_year || b.published_year >= currentYear - 6)
+      // Google's publishedDate is per-EDITION, not per-work — a random 2021
+      // reprint of Don Quixote passes the year check above just fine. What
+      // actually distinguishes a genuinely popular recent release from an
+      // old public-domain classic's anonymous reissue is that real reader
+      // ratings accumulate on the specific edition people are actually
+      // buying/reading — reprints almost never have any. Requiring at least
+      // a handful of ratings filters those out.
+      .filter(b => b.ratingsCount >= 5);
 
     items.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
 
