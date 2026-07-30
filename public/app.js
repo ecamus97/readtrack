@@ -11,6 +11,19 @@ let libraryFilter = 'todos';
 
 const CATEGORY_CHIPS = ['Fiction', 'Fantasy', 'Thriller', 'Mystery', 'Romance', 'History', 'Biography', 'Science', 'Adventure', 'Non-Fiction'];
 
+// Decade chips + a "Custom" option that reveals the from/to number inputs.
+// Category and year are independent, combinable filters — either, both, or
+// neither can be active at once; whichever are active get sent together to
+// /api/browse.
+const YEAR_CHIPS = [
+  { label: '2020s', from: 2020, to: 2029 },
+  { label: '2010s', from: 2010, to: 2019 },
+  { label: '2000s', from: 2000, to: 2009 },
+  { label: '1990s', from: 1990, to: 1999 },
+  { label: 'Before 1990', from: null, to: 1989 },
+  { label: 'Custom…', custom: true }
+];
+
 // Free, no-API-key avatar generator (DiceBear). Sticking to a single style
 // keeps the picker visually consistent — variety comes from the seeds
 // (different hair, skin tone, accessories) rather than mixing art styles.
@@ -388,7 +401,7 @@ function refreshCurrentView(name) {
   const active = name || currentViewName();
   if (active === 'dashboard') loadDashboard();
   if (active === 'library') loadLibrary();
-  if (active === 'search') { loadRecommended(); updateClubModeBanner(); }
+  if (active === 'search') { loadRecommended(); loadPopular(); updateClubModeBanner(); }
   if (active === 'social') loadSocial();
   if (active === 'profile') loadProfile();
   if (active === 'club-detail') loadClubDetail();
@@ -405,20 +418,68 @@ function currentViewName() {
 document.getElementById('searchBtn').onclick = doSearch;
 document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
 
+// Current filter state — category and year range are independent and
+// combinable; both get sent together to /api/browse whenever either changes.
+let activeCategory = null;
+let activeYearFrom = null;
+let activeYearTo = null;
+
 document.getElementById('categoryFilters').innerHTML = CATEGORY_CHIPS.map(c => `<button class="chip" data-category="${c}">${c}</button>`).join('');
 document.querySelectorAll('#categoryFilters .chip').forEach(chip => {
   chip.onclick = () => {
     const alreadyActive = chip.classList.contains('active');
     document.querySelectorAll('#categoryFilters .chip').forEach(c => c.classList.remove('active'));
+    activeCategory = alreadyActive ? null : chip.dataset.category;
+    if (activeCategory) chip.classList.add('active');
+    document.getElementById('searchInput').value = '';
+    runFilteredBrowse();
+    loadPopular(); // "Popular now" also respects the category filter
+  };
+});
+
+document.getElementById('yearFilters').innerHTML = YEAR_CHIPS.map((y, i) => `<button class="chip" data-year-index="${i}">${y.label}</button>`).join('');
+document.querySelectorAll('#yearFilters .chip').forEach((chip, i) => {
+  chip.onclick = () => {
+    const def = YEAR_CHIPS[i];
+    const alreadyActive = chip.classList.contains('active');
+    document.querySelectorAll('#yearFilters .chip').forEach(c => c.classList.remove('active'));
+    document.getElementById('yearRangeInputs').classList.add('hidden');
+
     if (alreadyActive) {
-      document.getElementById('searchResults').innerHTML = '';
+      activeYearFrom = null;
+      activeYearTo = null;
+      runFilteredBrowse();
       return;
     }
     chip.classList.add('active');
+    if (def.custom) {
+      document.getElementById('yearRangeInputs').classList.remove('hidden');
+      return; // wait for the Apply button — nothing to browse yet
+    }
+    activeYearFrom = def.from;
+    activeYearTo = def.to;
     document.getElementById('searchInput').value = '';
-    browseCategory(chip.dataset.category);
+    runFilteredBrowse();
   };
 });
+
+document.getElementById('yearRangeApplyBtn').onclick = () => {
+  const from = parseInt(document.getElementById('yearFromInput').value) || null;
+  const to = parseInt(document.getElementById('yearToInput').value) || null;
+  if (!from && !to) return;
+  activeYearFrom = from;
+  activeYearTo = to;
+  document.getElementById('searchInput').value = '';
+  runFilteredBrowse();
+};
+
+function runFilteredBrowse() {
+  if (!activeCategory && !activeYearFrom && !activeYearTo) {
+    document.getElementById('searchResults').innerHTML = '';
+    return;
+  }
+  browseCategory(activeCategory, activeYearFrom, activeYearTo);
+}
 
 function bookCoverHtml(cover_url) {
   return cover_url
@@ -437,8 +498,16 @@ function renderBookGrid(books, source) {
   `).join('') || '<p class="empty-state">No results. Try another search term.</p>';
 }
 
+// Which in-memory cache backs each Search & Add grid — 'search' covers both
+// free-text search and category/year browse results (they share one cache).
+function cacheForSource(source) {
+  if (source === 'rec') return window.__recommendedCache;
+  if (source === 'popular') return window.__popularCache;
+  return window.__searchCache;
+}
+
 function showBookPreview(index, source) {
-  const arr = source === 'rec' ? window.__recommendedCache : window.__searchCache;
+  const arr = cacheForSource(source);
   const b = arr[index];
   if (!b) return;
   const clubMode = !!window.__clubModeClubId;
@@ -459,7 +528,7 @@ function showBookPreview(index, source) {
       <button class="secondary" onclick="closeModal()">Close</button>
       ${clubMode
         ? `<button class="primary" onclick="closeModal(); addBookToClub(${index})">+ Add to club</button>`
-        : `<button class="primary" onclick="closeModal(); openAddModal(${index}, ${source === 'rec'})">+ Add to my library</button>`}
+        : `<button class="primary" onclick="closeModal(); openAddModal(${index}, '${source}')">+ Add to my library</button>`}
     </div>
   `);
 }
@@ -501,10 +570,18 @@ async function addBookToClub(index) {
   }
 }
 
+function clearBrowseFilters() {
+  document.querySelectorAll('#categoryFilters .chip, #yearFilters .chip').forEach(c => c.classList.remove('active'));
+  document.getElementById('yearRangeInputs').classList.add('hidden');
+  activeCategory = null;
+  activeYearFrom = null;
+  activeYearTo = null;
+}
+
 async function doSearch() {
   const q = document.getElementById('searchInput').value.trim();
   if (!q) return;
-  document.querySelectorAll('#categoryFilters .chip').forEach(c => c.classList.remove('active'));
+  clearBrowseFilters();
   const container = document.getElementById('searchResults');
   container.innerHTML = '<p class="empty-state">Searching...</p>';
   let results;
@@ -518,12 +595,19 @@ async function doSearch() {
   container.innerHTML = renderBookGrid(results, 'search');
 }
 
-async function browseCategory(category) {
+// category and yearFrom/yearTo are independent and combinable — any subset
+// of them can be present at once (runFilteredBrowse only calls this once at
+// least one is set).
+async function browseCategory(category, yearFrom, yearTo) {
   const container = document.getElementById('searchResults');
   container.innerHTML = '<p class="empty-state">Loading...</p>';
+  const params = new URLSearchParams();
+  if (category) params.set('category', category);
+  if (yearFrom) params.set('yearFrom', yearFrom);
+  if (yearTo) params.set('yearTo', yearTo);
   let results;
   try {
-    results = await api(`/api/browse?category=${encodeURIComponent(category)}`);
+    results = await api(`/api/browse?${params.toString()}`);
   } catch (e) {
     container.innerHTML = `<p class="empty-state">${escapeHtml(e.message)}</p>`;
     return;
@@ -543,6 +627,28 @@ async function loadRecommended() {
     document.getElementById('recommendedLabel').textContent = `Recommended for you — based on ${data.subject}`;
     window.__recommendedCache = data.books;
     container.innerHTML = renderBookGrid(data.books, 'rec');
+  } catch (e) {
+    section.classList.add('hidden');
+  }
+}
+
+// Uses Google Books' ratingsCount/averageRating (OpenLibrary doesn't track
+// either), restricted to roughly the last 6 years — "popular" here means
+// "popular among recent releases", not just popular ever. Re-runs whenever
+// a category filter is toggled so it can reflect that pick too, but doesn't
+// depend on one (falls back to a general "fiction" query).
+async function loadPopular() {
+  const section = document.getElementById('popularSection');
+  const container = document.getElementById('popular');
+  if (window.__clubModeClubId) { section.classList.add('hidden'); return; }
+  try {
+    const params = new URLSearchParams();
+    if (activeCategory) params.set('category', activeCategory);
+    const data = await api(`/api/popular?${params.toString()}`);
+    if (!data.books.length) { section.classList.add('hidden'); return; }
+    section.classList.remove('hidden');
+    window.__popularCache = data.books;
+    container.innerHTML = renderBookGrid(data.books, 'popular');
   } catch (e) {
     section.classList.add('hidden');
   }
@@ -588,14 +694,14 @@ function toggleStatusFields(selectEl, prefix) {
   }
 }
 
-async function openAddModal(index, fromRecommended) {
-  const source = fromRecommended ? window.__recommendedCache : window.__searchCache;
-  const original = source[index];
+async function openAddModal(index, source) {
+  const cache = cacheForSource(source);
+  const original = cache[index];
   const missingData = !original.pages || !original.categories;
   // Shows the modal right away with what we already have, while trying to
   // fill in pages/categories in the background (works with or without ISBN —
   // the backend also tries by title/author).
-  renderAddModal(index, original, missingData, fromRecommended);
+  renderAddModal(index, original, missingData, source);
 
   if (missingData) {
     try {
@@ -604,10 +710,10 @@ async function openAddModal(index, fromRecommended) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(original)
       });
-      source[index] = enriched;
+      cache[index] = enriched;
       // Only re-render if this book's modal is still open.
-      if (modalBox.dataset.addIndex === String(index) && modalBox.dataset.addSource === (fromRecommended ? 'rec' : 'search')) {
-        renderAddModal(index, enriched, false, fromRecommended);
+      if (modalBox.dataset.addIndex === String(index) && modalBox.dataset.addSource === source) {
+        renderAddModal(index, enriched, false, source);
       }
     } catch (e) {
       // If enrichment fails, we keep going with the original data; the user
@@ -616,9 +722,9 @@ async function openAddModal(index, fromRecommended) {
   }
 }
 
-function renderAddModal(index, book, loadingExtra, fromRecommended) {
+function renderAddModal(index, book, loadingExtra, source) {
   modalBox.dataset.addIndex = String(index);
-  modalBox.dataset.addSource = fromRecommended ? 'rec' : 'search';
+  modalBox.dataset.addSource = source;
   const today = new Date().toISOString().slice(0, 10);
   openModal(`
     <h3>Add "${escapeHtml(book.title)}"</h3>
@@ -642,7 +748,7 @@ function renderAddModal(index, book, loadingExtra, fromRecommended) {
     ${ratingFieldHtml('m_rating', 0, 'm_rating_wrap')}
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">Cancel</button>
-      <button class="primary" onclick="confirmAdd(${index}, ${fromRecommended})">Add</button>
+      <button class="primary" onclick="confirmAdd(${index}, '${source}')">Add</button>
     </div>
   `);
   wireStarPicker(modalBox);
@@ -651,9 +757,9 @@ function renderAddModal(index, book, loadingExtra, fromRecommended) {
   document.getElementById('m_end_wrap').classList.add('hidden');
 }
 
-async function confirmAdd(index, fromRecommended) {
-  const source = fromRecommended ? window.__recommendedCache : window.__searchCache;
-  const book = { ...source[index] };
+async function confirmAdd(index, source) {
+  const cache = cacheForSource(source);
+  const book = { ...cache[index] };
   book.pages = parseInt(document.getElementById('m_pages').value) || null;
   book.categories = document.getElementById('m_categories').value.trim() || null;
   const status = document.getElementById('m_status').value;

@@ -258,6 +258,27 @@ select {
 }
 
 .filter-tabs, .social-tabs { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+
+/* ---------- Search & Add: category + year filter groups ---------- */
+.filter-group { margin-bottom: 4px; }
+.filter-group-label {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.year-range-inputs { display: flex; align-items: center; gap: 8px; margin: -6px 0 18px; }
+.year-range-inputs input {
+  width: 110px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+.year-range-inputs span { color: var(--muted); }
 .chip {
   padding: 7px 16px;
   border-radius: 999px;
@@ -449,7 +470,7 @@ select {
 .add-contact { display: flex; gap: 10px; margin-bottom: 14px; }
 .add-contact input { flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); font-family: inherit; }
 .invite-row { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
-#recommendedSection { margin-top: 32px; }
+#recommendedSection, #popularSection { margin-top: 32px; }
 
 .contact-row {
   display: flex;

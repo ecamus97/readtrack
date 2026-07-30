@@ -657,6 +657,11 @@ function shuffleArray(arr) {
   return a;
 }
 
+// Used to bias the OpenLibrary "close to average year" sort AND now also as
+// a fallback signal for recommendations. Kept limited to finished books —
+// this is specifically "what pace/era did they actually finish reading",
+// which stays meaningful even once libraryTaste() below (all owned books)
+// takes over as the main driver of recommendations.
 async function averageReadYear(user_id) {
   const rows = await db.all(`
     SELECT b.published_year FROM user_books ub JOIN books b ON b.id = ub.book_id
@@ -666,14 +671,58 @@ async function averageReadYear(user_id) {
   return Math.round(rows.reduce((sum, r) => sum + r.published_year, 0) / rows.length);
 }
 
-async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear) {
+// Recommendations used to be driven by computeStats().top_generos, which
+// only counts books with status='leido' — for a newer user (or one who adds
+// books they're currently reading/plan to read without marking many as
+// finished yet), that's a tiny, unrepresentative sample, which is why
+// recommendations could end up generic and skew toward whatever OpenLibrary
+// considers the "default" ordering for a subject (often old, public-domain
+// classics with the most editions catalogued — NOT what the user is
+// actually into). Using every owned book, regardless of status, reflects
+// taste much sooner and weighs recency correctly for users whose library is
+// mostly recent releases they haven't finished yet.
+async function libraryTaste(user_id) {
+  const rows = await db.all(`
+    SELECT b.categories, b.published_year FROM user_books ub JOIN books b ON b.id = ub.book_id
+    WHERE ub.user_id = ?
+  `, [user_id]);
+
+  const genreCounts = {};
+  for (const r of rows) {
+    if (!r.categories) continue;
+    for (const g of r.categories.split(',').map(s => s.trim()).filter(Boolean)) {
+      genreCounts[g] = (genreCounts[g] || 0) + 1;
+    }
+  }
+  const topGenres = Object.entries(genreCounts).sort((a, b) => b[1] - a[1]).map(([g]) => g);
+
+  const years = rows.map(r => r.published_year).filter(Boolean);
+  const avgYear = years.length ? Math.round(years.reduce((a, b) => a + b, 0) / years.length) : null;
+
+  return { topGenres, avgYear };
+}
+
+async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear, yearFrom, yearTo) {
   const targetLimit = limit || 8;
   const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
-  const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`, 5000);
+  // Fetch a bigger pool than we need (10x instead of 5x) — a hard year-range
+  // filter can throw away most of a subject's results (OpenLibrary subjects
+  // skew old), so we need enough candidates left over for the requested
+  // range to still return a full page of results.
+  const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 10}`, 5000);
   if (!r.ok) return [];
   const data = await r.json();
-  const candidates = (data.works || [])
+  let candidates = (data.works || [])
     .filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
+
+  if (yearFrom || yearTo) {
+    candidates = candidates.filter(w => {
+      if (!w.first_publish_year) return false;
+      if (yearFrom && w.first_publish_year < yearFrom) return false;
+      if (yearTo && w.first_publish_year > yearTo) return false;
+      return true;
+    });
+  }
 
   let selected;
   if (preferredYear) {
@@ -685,8 +734,16 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
     const close = withYear.slice(0, closeCount);
     const rest = shuffleArray([...withYear.slice(closeCount), ...withoutYear]);
     selected = shuffleArray([...close, ...rest.slice(0, Math.max(0, targetLimit - close.length))]);
+  } else if (!yearFrom && !yearTo) {
+    // No signal about the user's era preference at all, and no explicit year
+    // filter requested — default to the most recently published books
+    // instead of OpenLibrary's raw subject order, which otherwise tends to
+    // surface old public-domain classics first.
+    const withYear = candidates.filter(w => w.first_publish_year).sort((a, b) => b.first_publish_year - a.first_publish_year);
+    const withoutYear = candidates.filter(w => !w.first_publish_year);
+    selected = [...withYear, ...withoutYear];
   } else {
-    selected = candidates.slice(0, targetLimit);
+    selected = shuffleArray(candidates);
   }
 
   return selected.slice(0, targetLimit).map(w => ({
@@ -703,8 +760,12 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
 }
 
 app.get('/api/recommendations', async (req, res) => {
-  const stats = await computeStats(req.userId);
-  const topGenre = stats.top_generos[0]?.[0];
+  // Driven by libraryTaste() — every owned book, any status — instead of
+  // computeStats().top_generos (which only counts finished books, and used
+  // to leave recommendations generic/stuck on OpenLibrary's default old-
+  // classics ordering for anyone who hadn't marked much as "read" yet).
+  const { topGenres, avgYear } = await libraryTaste(req.userId);
+  const topGenre = topGenres[0];
   if (!topGenre) return res.json({ subject: null, books: [] });
 
   const ownedRows = await db.all(`
@@ -713,8 +774,7 @@ app.get('/api/recommendations', async (req, res) => {
   const alreadyOwned = new Set(ownedRows.map(r => r.t));
 
   try {
-    const preferredYear = await averageReadYear(req.userId);
-    const books = await fetchSubjectBooks(topGenre, alreadyOwned, 8, preferredYear);
+    const books = await fetchSubjectBooks(topGenre, alreadyOwned, 8, avgYear);
     res.json({ subject: topGenre, books });
   } catch (err) {
     console.error('Recommendations lookup failed:', err.message);
@@ -723,15 +783,73 @@ app.get('/api/recommendations', async (req, res) => {
 });
 
 app.get('/api/browse', async (req, res) => {
-  const { category } = req.query;
-  if (!category) return res.status(400).json({ error: 'category is required' });
+  // category and year range are independent and combinable — either one can
+  // be used alone, or both together. If no category was picked but a year
+  // range was, we still need *some* OpenLibrary subject to query against,
+  // so fall back to a broad "fiction" subject in that case.
+  const { category, yearFrom, yearTo } = req.query;
+  if (!category && !yearFrom && !yearTo) return res.status(400).json({ error: 'category or a year range is required' });
+  const subject = category || 'fiction';
   try {
-    const preferredYear = await averageReadYear(req.userId);
-    const books = await fetchSubjectBooks(category, null, 20, preferredYear);
+    const preferredYear = (yearFrom || yearTo) ? null : await averageReadYear(req.userId);
+    const books = await fetchSubjectBooks(
+      subject, null, 20, preferredYear,
+      yearFrom ? parseInt(yearFrom) : null,
+      yearTo ? parseInt(yearTo) : null
+    );
     res.json(books);
   } catch (err) {
     console.error('Browse by category failed:', err.message);
     res.status(502).json({ error: 'Could not reach Open Library. Check the server logs for details.' });
+  }
+});
+
+// "Popular now" — OpenLibrary has no real popularity/ratings signal, so this
+// uses Google Books instead: pull a batch for the (optional) category,
+// restrict to books published in roughly the last 6 years, and rank by
+// ratingsCount (falling back to averageRating when tied/missing) so what
+// surfaces is actually popular *recent* books, not just whatever Google's
+// default relevance ranking returns.
+app.get('/api/popular', async (req, res) => {
+  const { category } = req.query;
+  const q = category ? `subject:${category}` : 'subject:fiction';
+  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&orderBy=newest&maxResults=40`);
+  try {
+    const r = await fetchWithTimeout(url, 5000);
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      console.error('Google Books (popular) returned an error:', r.status, JSON.stringify(data.error || data));
+      return res.json({ books: [] });
+    }
+    const currentYear = new Date().getFullYear();
+    const items = (data.items || [])
+      .map(item => {
+        const info = item.volumeInfo || {};
+        const year = info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null;
+        const isbn = (info.industryIdentifiers || []).find(i => i.type === 'ISBN_13')?.identifier
+          || (info.industryIdentifiers || [])[0]?.identifier || null;
+        return {
+          api_id: item.id,
+          isbn,
+          title: info.title || 'Untitled',
+          authors: (info.authors || []).join(', '),
+          cover_url: info.imageLinks?.thumbnail || (isbn ? `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg` : null),
+          pages: info.pageCount || null,
+          published_year: year,
+          categories: (info.categories || []).join(', ') || category || null,
+          language: info.language || null,
+          ratingsCount: info.ratingsCount || 0,
+          averageRating: info.averageRating || 0
+        };
+      })
+      .filter(b => !b.published_year || b.published_year >= currentYear - 6);
+
+    items.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
+
+    res.json({ books: items.slice(0, 12).map(({ ratingsCount, averageRating, ...b }) => b) });
+  } catch (err) {
+    console.error('Popular lookup failed:', err.message);
+    res.json({ books: [] });
   }
 });
 

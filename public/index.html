@@ -21,7 +21,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=12">
+<link rel="stylesheet" href="styles.css?v=13">
 </head>
 <body>
   <!-- The anon key is meant to be public (it's what every Supabase JS-SDK
@@ -169,8 +169,27 @@
         <input id="searchInput" placeholder="e.g. One Hundred Years of Solitude" />
         <button id="searchBtn">Search</button>
       </div>
-      <div class="filter-tabs" id="categoryFilters"></div>
+      <div class="filter-group">
+        <p class="filter-group-label">Category</p>
+        <div class="filter-tabs" id="categoryFilters"></div>
+      </div>
+      <div class="filter-group">
+        <p class="filter-group-label">Year</p>
+        <div class="filter-tabs" id="yearFilters"></div>
+        <div class="year-range-inputs hidden" id="yearRangeInputs">
+          <input type="number" id="yearFromInput" placeholder="From e.g. 1990" inputmode="numeric">
+          <span>–</span>
+          <input type="number" id="yearToInput" placeholder="To e.g. 2010" inputmode="numeric">
+          <button class="secondary small" id="yearRangeApplyBtn">Apply</button>
+        </div>
+      </div>
       <div id="searchResults" class="grid"></div>
+
+      <div id="popularSection" class="hidden">
+        <h3 class="section-label">🔥 Popular now</h3>
+        <div id="popular" class="grid"></div>
+      </div>
+
       <div id="recommendedSection">
         <h3 class="section-label" id="recommendedLabel">Recommended for you</h3>
         <div id="recommended" class="grid"></div>
@@ -254,7 +273,7 @@
   </div> <!-- #appScreen -->
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
 
   <!-- Diagnostic overlay: add ?debug=1 to the URL once (in Safari OR inside
        the installed app itself — e.g. by typing it in Safari's URL bar
