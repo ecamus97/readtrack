@@ -888,22 +888,30 @@ app.get('/api/popular', async (req, res) => {
       })
       // Google's publishedDate is per-EDITION, not per-work — a random 2021
       // reprint of Don Quixote passes a plain year check just fine, which is
-      // why this also requires real reader ratings AND excludes anything
-      // tagged as a classic/literary-criticism reissue. No fallback to an
-      // unfiltered list here anymore — a shorter, correct list beats a
-      // longer, wrong one.
-      .filter(b => !b.published_year || b.published_year >= currentYear - 6)
-      .filter(b => b.ratingsCount >= 1)
+      // why this also excludes anything tagged as a classic/literary-
+      // criticism reissue — that part never gets relaxed, at any tier below.
       .filter(b => !CLASSIC_CATEGORY_HINTS.some(hint => (b.categories || '').toLowerCase().includes(hint)));
 
-    items.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
+    // Google Books' review data is sparse — plenty of legitimately popular,
+    // recent books have zero ratingsCount on their listing, so requiring
+    // ratings unconditionally could (and did) wipe out the whole list.
+    // Try strict first (recent + some rating signal), and only relax one
+    // dimension at a time if that leaves too few — recency never gets
+    // dropped entirely (that's the whole point of "now"), and the classic
+    // exclusion above never gets relaxed at all.
+    const hasRatingSignal = b => b.ratingsCount >= 1 || b.averageRating > 0;
+    let filtered = items.filter(b => (!b.published_year || b.published_year >= currentYear - 6) && hasRatingSignal(b));
+    if (filtered.length < 6) filtered = items.filter(b => !b.published_year || b.published_year >= currentYear - 10);
+    if (filtered.length < 6) filtered = items.filter(b => !b.published_year || b.published_year >= currentYear - 6);
+
+    filtered.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
 
     // Google's own ranking is deterministic, so without this, hitting
     // "refresh" on Popular Now would show the exact same 12 books every
     // time — shuffling within the top slice of the (already quality-
     // filtered, ranked) pool means refreshing surfaces a genuinely
     // different set while still staying within "actually popular".
-    const popular = shuffleArray(items.slice(0, 24));
+    const popular = shuffleArray(filtered.slice(0, 24));
 
     res.json({ books: popular.slice(0, 12).map(({ ratingsCount, averageRating, ...b }) => b) });
   } catch (err) {
