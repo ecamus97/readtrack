@@ -590,39 +590,18 @@ select {
 }
 
 /* ---------- Mobile ---------- */
+/* This whole mobile section used to fight iOS Safari's viewport quirks head
+   on: freezing document scroll, computing 100dvh via JS, reordering flex
+   items, reserving env(safe-area-inset-bottom)... none of it actually fixed
+   the bottom-nav jump/gap, and comparing against another working app of
+   ours (same device, same iOS) showed why: that app does none of this. It
+   just lets the document scroll normally, keeps the header `position:
+   sticky`, and gives the nav a plain `position: fixed; bottom: 0`, with
+   `main` getting extra padding-bottom to clear it. That's the standard,
+   boring pattern browsers handle correctly without any help — so this
+   mirrors it instead of re-solving an already-solved problem. */
 @media (max-width: 640px) {
-  /* iOS Safari ties its address-bar auto-hide/show to the *document*
-     scrolling, and that transition briefly reflows anything position:fixed
-     — on short pages (like Social with no content) this made the fixed
-     bottom nav visibly jump. Freezing the document itself and moving all
-     scrolling into #appScreen instead (as its own scroll container) means
-     the page never scrolls, so there's nothing to trigger that jump. */
-  html, body {
-    height: 100vh;
-    height: 100dvh;
-    height: var(--app-height, 100dvh); /* set via JS in index.html from
-      visualViewport — more reliable than the browser's own dvh recalculation,
-      which iOS Safari doesn't always re-run when its address bar auto-hides
-      or reappears, leaving stale blank space at the bottom otherwise. */
-    overflow: hidden; /* single source of truth for the viewport height — a
-      child also computing its own height could round differently */
-    margin: 0;
-  }
-  #appScreen {
-    display: flex;
-    flex-direction: column;
-    height: 100%; /* inherits body's already-resolved dvh instead of recomputing it */
-  }
-  /* html/body no longer scroll (see above), so the login/signup screen needs
-     its own scroll capability in case its content is ever taller than a
-     small phone's viewport (e.g. keyboard open + validation error shown). */
-  .auth-screen {
-    height: 100%; /* inherits body's dvh instead of recomputing it separately */
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  header { flex-shrink: 0; position: static; padding: 12px 16px; }
+  header { padding: 12px 16px; }
   .brand h1 { font-size: 1.1rem; }
   .brand-mark { width: 30px; height: 30px; font-size: 0.95rem; }
   .user-switch label { display: none; } /* "Account" label — the select itself is enough context on a small screen */
@@ -630,48 +609,18 @@ select {
   .icon-btn, .avatar-btn { width: 34px; height: 34px; }
 
   main {
-    flex: 1;
-    order: 1; /* HTML order is header, nav, main — but we want it to LOOK like
-      header, main, nav (nav pinned to the bottom like a native tab bar).
-      Flex order lets us keep nav a normal (non-fixed) flow element while
-      still visually placing it after main, instead of between header and
-      main where it sits in the raw markup. */
-    min-height: 0; /* THE key fix: without this, a flex item won't shrink below
-      its content's height, so overflow-y:auto never actually kicks in — main
-      just grows to fit everything (get clipped by body's overflow:hidden
-      instead of scrolling), which is exactly why Profile content looked cut
-      off with no way to reach the rest of it. */
-    overflow-y: auto;
-    overflow-x: hidden; /* safety net: nothing inside main should ever be able
-      to silently bleed past the screen edge (that's what was happening to
-      the avatar/badge grids below — visible overflow with no way to reach
-      or even notice the cut-off part, since it isn't a scrollbar, it's just
-      content painted past the viewport). */
-    -webkit-overflow-scrolling: touch;
-    padding: 20px 16px 16px;
+    padding: 20px 16px 96px; /* extra bottom padding clears the fixed nav */
     max-width: 100%;
   }
 
-  /* The tab bar looks like a fixed bottom bar, but it's actually a normal
-     flex child at the end of #appScreen's column (header, then main flex:1,
-     then nav) rather than position:fixed. Fixed positioning combined with
-     100dvh caused the bar to visibly detach from the true bottom edge right
-     after certain interactions (closing a modal, switching tabs) because
-     Safari recomputes the address-bar-driven viewport height and a fixed
-     element doesn't always get repositioned in the same paint as that
-     resize. Being a normal flex item sidesteps the whole problem: nav's
-     position is derived directly from #appScreen's own (already-correct)
-     height, every single frame, with no separate fixed-position math to
-     get out of sync. */
+  /* A plain fixed bottom bar, like a native tab bar — no scroll-freezing or
+     JS height tricks needed, browsers position `fixed` elements correctly
+     on their own. */
   nav {
-    flex-shrink: 0;
-    order: 2; /* see main's `order` comment above — this puts nav visually last */
-    /* Not reserving env(safe-area-inset-bottom) at all here, on purpose —
-       our other reference app doesn't reserve it either (its tab labels
-       sit right up against the true bottom edge) and looks right on the
-       same device, so we're matching that instead of the "textbook" iOS
-       safe-area treatment. */
-    padding: 8px 6px 10px;
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 30;
+    padding: 8px 6px;
     border-bottom: none;
     border-top: 1px solid var(--border);
     box-shadow: 0 -4px 16px rgba(38, 34, 32, 0.06);
@@ -751,13 +700,11 @@ select {
   .badges-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
 }
 
-/* Installed to the home screen (PWA standalone mode), iOS overlays the
-   status bar (clock/battery) on top of our content because of the
-   "black-translucent" status bar style — push the header down by the safe
-   area so the logout/profile buttons aren't hidden underneath it. */
-@media (display-mode: standalone) {
-  header { padding-top: calc(18px + env(safe-area-inset-top, 0px)); }
-}
+/* No standalone-mode status-bar padding hack here on purpose — that was
+   only needed because viewport-fit=cover (removed from index.html) told iOS
+   to extend our content full-bleed under the status bar/home indicator.
+   Without it, iOS insets the page automatically, the same way our other,
+   working reference app does (no such rule there either). */
 
 @media (max-width: 380px) {
   .pill-row .stat-pill { flex: 1 1 calc(50% - 14px); }

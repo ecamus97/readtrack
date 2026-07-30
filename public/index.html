@@ -3,7 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <title>ReadTrack</title>
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- No viewport-fit=cover here, on purpose: that's what was telling iOS to
+     extend our content full-bleed under the status bar/home indicator, which
+     is what forced us into manually reservong/computing safe-area-inset-*
+     and 100dvh in the first place. Our other, working reference app doesn't
+     set it either — without it, iOS insets the page automatically and a
+     plain `position: fixed` bottom nav just works, no JS height tricks
+     needed. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#2f6f62">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -14,30 +21,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=11">
-<!-- 100dvh should track the real visible viewport, but iOS Safari doesn't
-     always re-run that calculation when its address bar hides/reappears
-     (no resize/scroll event fires in every case) — the layout can be left
-     sized to a stale, smaller height, leaving real blank space at the
-     bottom once the address bar retracts and more room becomes available.
-     Computing it ourselves from visualViewport (which iOS DOES reliably
-     update) and re-checking on every resize/scroll/orientation change is
-     the standard, robust fix for this. See --app-height usage in styles.css. -->
-<script>
-  (function () {
-    function setAppHeight() {
-      var h = (window.visualViewport ? window.visualViewport.height : window.innerHeight);
-      document.documentElement.style.setProperty('--app-height', h + 'px');
-    }
-    setAppHeight();
-    window.addEventListener('resize', setAppHeight);
-    window.addEventListener('orientationchange', setAppHeight);
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', setAppHeight);
-      window.visualViewport.addEventListener('scroll', setAppHeight);
-    }
-  })();
-</script>
+<link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
   <!-- The anon key is meant to be public (it's what every Supabase JS-SDK
