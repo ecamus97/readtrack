@@ -270,7 +270,7 @@
   </div> <!-- #appScreen -->
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 
   <!-- Diagnostic overlay: add ?debug=1 to the URL to show real on-device
        measurements (viewport size, computed styles, scroll info) as
@@ -287,18 +287,20 @@
             return el;
           })();
           const el = (sel) => document.querySelector(sel);
-          const rect = (sel) => { const n = el(sel); if (!n) return 'not found'; const r = n.getBoundingClientRect(); const cs = getComputedStyle(n); return `top=${r.top.toFixed(0)} h=${r.height.toFixed(0)} scrollH=${n.scrollHeight} overflowY=${cs.overflowY} display=${cs.display} minHeight=${cs.minHeight} position=${cs.position}`; };
+          const rect = (sel) => { const n = el(sel); if (!n) return 'not found'; const r = n.getBoundingClientRect(); const cs = getComputedStyle(n); return `top=${r.top.toFixed(0)} bottom=${r.bottom.toFixed(0)} h=${r.height.toFixed(0)} scrollH=${n.scrollHeight} overflowY=${cs.overflowY} display=${cs.display} order=${cs.order} position=${cs.position} paddingBottom=${cs.paddingBottom}`; };
+          const appHeightVar = getComputedStyle(document.documentElement).getPropertyValue('--app-height');
           panel.textContent = [
             `window.innerHeight=${window.innerHeight}`,
             `visualViewport.height=${window.visualViewport ? window.visualViewport.height.toFixed(0) : 'n/a'}`,
+            `visualViewport.offsetTop=${window.visualViewport ? window.visualViewport.offsetTop.toFixed(0) : 'n/a'}`,
             `document.documentElement.clientHeight=${document.documentElement.clientHeight}`,
-            `matchMedia(max-width:640px)=${window.matchMedia('(max-width: 640px)').matches}`,
-            `display-mode standalone=${window.matchMedia('(display-mode: standalone)').matches}`,
+            `--app-height (CSS var)=${appHeightVar}`,
+            `safe-area-inset-bottom test element: ${(() => { const t = document.createElement('div'); t.style.cssText='position:fixed;bottom:0;height:env(safe-area-inset-bottom,0px);width:1px;'; document.body.appendChild(t); const h = t.getBoundingClientRect().height; t.remove(); return h; })()}`,
             `body: ${rect('body')}`,
             `#appScreen: ${rect('#appScreen')}`,
+            `header: ${rect('header')}`,
             `main: ${rect('main')}`,
-            `nav: ${rect('nav')}`,
-            `#view-profile: ${rect('#view-profile')}`
+            `nav: ${rect('nav')}`
           ].join('\n');
         }, 500);
       });
