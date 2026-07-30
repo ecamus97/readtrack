@@ -763,10 +763,13 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
     // No signal about the user's era preference at all, and no explicit year
     // filter requested — default to the most recently published books
     // instead of OpenLibrary's raw subject order, which otherwise tends to
-    // surface old public-domain classics first.
+    // surface old public-domain classics first. Shuffled within that recent
+    // pool (rather than a fixed sort) so hitting "refresh" on this same
+    // category actually surfaces a different set instead of the identical
+    // list every time.
     const withYear = candidates.filter(w => w.first_publish_year).sort((a, b) => b.first_publish_year - a.first_publish_year);
     const withoutYear = candidates.filter(w => !w.first_publish_year);
-    selected = [...withYear, ...withoutYear];
+    selected = [...shuffleArray(withYear.slice(0, targetLimit * 2)), ...shuffleArray(withoutYear)];
   } else {
     selected = shuffleArray(candidates);
   }
@@ -835,28 +838,42 @@ app.get('/api/browse', async (req, res) => {
 // ratingsCount (falling back to averageRating when tied/missing) so what
 // surfaces is actually popular *recent* books, not just whatever Google's
 // default relevance ranking returns.
+// A classic's public-domain reissue can still slip past every check below
+// (a fresh 2024 edition, real cover, and yes — sometimes even a handful of
+// ratings on that specific listing from people rating the *work*, not the
+// edition). This list of Google Books category tags is the most reliable
+// remaining signal: legitimately new popular fiction is essentially never
+// tagged this way, while classic reissues almost always are.
+const CLASSIC_CATEGORY_HINTS = ['classic', 'literary criticism', 'literary collections'];
+
 app.get('/api/popular', async (req, res) => {
   const { category } = req.query;
   const q = category ? `subject:${category}` : 'subject:fiction';
   // orderBy=relevance (Google's default ranking, which leans toward
   // well-known/discussed books) gives a pool that's actually likely to have
   // real ratings, unlike orderBy=newest, which mostly surfaces obscure
-  // brand-new listings (barely anyone has rated those yet either).
-  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&orderBy=relevance&maxResults=40`);
+  // brand-new listings (barely anyone has rated those yet either). Fetching
+  // two pages instead of one gives enough of a pool to survive the strict
+  // filtering below without ever needing a "just show everything" fallback.
+  const base = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&orderBy=relevance&maxResults=40`;
   try {
-    const r = await fetchWithTimeout(url, 5000);
-    const data = await r.json();
-    if (!r.ok || data.error) {
-      console.error('Google Books (popular) returned an error:', r.status, JSON.stringify(data.error || data));
+    const [r1, r2] = await Promise.all([
+      fetchWithTimeout(withGoogleKey(`${base}&startIndex=0`), 6000),
+      fetchWithTimeout(withGoogleKey(`${base}&startIndex=40`), 6000)
+    ]);
+    const [d1, d2] = await Promise.all([r1.json(), r2.json()]);
+    if ((!r1.ok || d1.error) && (!r2.ok || d2.error)) {
+      console.error('Google Books (popular) returned an error:', r1.status, JSON.stringify(d1.error || d1));
       return res.json({ books: [] });
     }
     const currentYear = new Date().getFullYear();
-    const items = (data.items || [])
+    const items = [...(d1.items || []), ...(d2.items || [])]
       .map(item => {
         const info = item.volumeInfo || {};
         const year = info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null;
         const isbn = (info.industryIdentifiers || []).find(i => i.type === 'ISBN_13')?.identifier
           || (info.industryIdentifiers || [])[0]?.identifier || null;
+        const categories = (info.categories || []).join(', ');
         return {
           api_id: item.id,
           isbn,
@@ -865,28 +882,30 @@ app.get('/api/popular', async (req, res) => {
           cover_url: info.imageLinks?.thumbnail || (isbn ? `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg` : null),
           pages: info.pageCount || null,
           published_year: year,
-          categories: (info.categories || []).join(', ') || category || null,
+          categories: categories || category || null,
           language: info.language || null,
           ratingsCount: info.ratingsCount || 0,
           averageRating: info.averageRating || 0
         };
       })
-      .filter(b => !b.published_year || b.published_year >= currentYear - 6);
+      // Google's publishedDate is per-EDITION, not per-work — a random 2021
+      // reprint of Don Quixote passes a plain year check just fine, which is
+      // why this also requires real reader ratings AND excludes anything
+      // tagged as a classic/literary-criticism reissue. No fallback to an
+      // unfiltered list here anymore — a shorter, correct list beats a
+      // longer, wrong one.
+      .filter(b => !b.published_year || b.published_year >= currentYear - 6)
+      .filter(b => b.ratingsCount >= 1)
+      .filter(b => !CLASSIC_CATEGORY_HINTS.some(hint => (b.categories || '').toLowerCase().includes(hint)));
 
-    // Google's publishedDate is per-EDITION, not per-work — a random 2021
-    // reprint of Don Quixote passes the year check above just fine. What
-    // actually distinguishes a genuinely popular recent release from an old
-    // public-domain classic's anonymous reissue is that real reader ratings
-    // accumulate on the specific edition people are actually buying/reading
-    // — reprints almost never have any. Requiring a couple of ratings
-    // filters those out. Requiring 5 turned out to zero out the whole list
-    // too often (a lot of legitimately popular recent books still don't
-    // have many Google Books ratings on that specific listing), so this
-    // only filters out zero-rating results, and only falls back to
-    // including those too if that still leaves too few to show anything.
-    let popular = items.filter(b => b.ratingsCount >= 1);
-    if (popular.length < 6) popular = items;
-    popular.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
+    items.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
+
+    // Google's own ranking is deterministic, so without this, hitting
+    // "refresh" on Popular Now would show the exact same 12 books every
+    // time — shuffling within the top slice of the (already quality-
+    // filtered, ranked) pool means refreshing surfaces a genuinely
+    // different set while still staying within "actually popular".
+    const popular = shuffleArray(items.slice(0, 24));
 
     res.json({ books: popular.slice(0, 12).map(({ ratingsCount, averageRating, ...b }) => b) });
   } catch (err) {

@@ -476,10 +476,15 @@ document.getElementById('yearRangeApplyBtn').onclick = () => {
 function runFilteredBrowse() {
   if (!activeCategory && !activeYearFrom && !activeYearTo) {
     document.getElementById('searchResults').innerHTML = '';
+    document.getElementById('resultsHeader').classList.add('hidden');
     return;
   }
   browseCategory(activeCategory, activeYearFrom, activeYearTo);
 }
+
+document.getElementById('resultsRefreshBtn').onclick = () => runFilteredBrowse();
+document.getElementById('recommendedRefreshBtn').onclick = () => loadRecommended();
+document.getElementById('popularRefreshBtn').onclick = () => loadPopular();
 
 function bookCoverHtml(cover_url) {
   return cover_url
@@ -582,6 +587,7 @@ async function doSearch() {
   const q = document.getElementById('searchInput').value.trim();
   if (!q) return;
   clearBrowseFilters();
+  document.getElementById('resultsHeader').classList.add('hidden'); // free-text search results aren't "refreshable" — same query, same results
   const container = document.getElementById('searchResults');
   container.innerHTML = '<p class="empty-state">Searching...</p>';
   let results;
@@ -599,6 +605,7 @@ async function doSearch() {
 // of them can be present at once (runFilteredBrowse only calls this once at
 // least one is set).
 async function browseCategory(category, yearFrom, yearTo) {
+  document.getElementById('resultsHeader').classList.remove('hidden');
   const container = document.getElementById('searchResults');
   container.innerHTML = '<p class="empty-state">Loading...</p>';
   const params = new URLSearchParams();

@@ -493,6 +493,9 @@ select {
   font-size: 0.9rem;
 }
 .section-label { margin: 24px 0 12px; font-size: 1.05rem; }
+.section-header { display: flex; align-items: center; justify-content: space-between; }
+.section-header .section-label { margin: 24px 0 12px; }
+.section-header .icon-btn { margin-top: 8px; }
 
 .feed-list { display: block; }
 
