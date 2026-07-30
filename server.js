@@ -852,27 +852,39 @@ app.get('/api/browse', async (req, res) => {
 // tagged this way, while classic reissues almost always are.
 const CLASSIC_CATEGORY_HINTS = ['classic', 'literary criticism', 'literary collections'];
 
-// Cross-checks a batch of ISBNs against OpenLibrary's search index to get
+// Cross-checks a batch of titles against OpenLibrary's search index to get
 // each book's real, WORK-level first_publish_year — this is the only
 // reliable fix for the "Don Quixote shows up as a 2021 release" problem.
 // Google Books' own published_year is per-EDITION (a reissue's cover date),
 // and neither category tags nor ratings data reliably distinguish a classic
 // reissue from an actual new release, so this is worth the extra request.
-async function lookupOriginalYears(isbns) {
-  if (!isbns.length) return {};
-  const q = isbns.map(i => `isbn:${i}`).join(' OR ');
-  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&fields=isbn,first_publish_year&limit=${isbns.length}`;
+// Matching by ISBN was tried first, but OpenLibrary's ISBN coverage for
+// random modern paperback printings is spotty — a lot of lookups just came
+// back empty, silently leaving the wrong (edition) year in place. Matching
+// by title has much better coverage precisely for the classics this needs
+// to catch (obscure ISBN, extremely well-known title).
+async function lookupOriginalYears(titles) {
+  if (!titles.length) return {};
+  const q = titles.map(t => `title:"${t.replace(/"/g, '')}"`).join(' OR ');
+  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&fields=title,first_publish_year&limit=${titles.length * 2}`;
   try {
     const r = await fetchWithTimeout(url, 6000);
     if (!r.ok) return {};
     const data = await r.json();
-    const byIsbn = {};
+    const byTitle = {};
     for (const doc of data.docs || []) {
-      for (const isbn of doc.isbn || []) {
-        if (isbns.includes(isbn)) byIsbn[isbn] = doc.first_publish_year || null;
+      const key = (doc.title || '').toLowerCase().trim();
+      // If a title matches multiple OpenLibrary works (common for reissues
+      // of the same classic under slightly different work records), keep
+      // the OLDEST year found — that's the one that actually identifies it
+      // as a classic; a coincidentally-matching modern book with the same
+      // title isn't going to also have a suspiciously ancient duplicate.
+      if (!key) continue;
+      if (!(key in byTitle) || (doc.first_publish_year && doc.first_publish_year < byTitle[key])) {
+        byTitle[key] = doc.first_publish_year || byTitle[key] || null;
       }
     }
-    return byIsbn;
+    return byTitle;
   } catch {
     return {};
   }
@@ -921,21 +933,26 @@ app.get('/api/popular', async (req, res) => {
     // Cross-check against OpenLibrary for the real original-publication
     // year — only for books that at least LOOK recent by Google's (edition)
     // date, to keep this to a reasonable number of lookups.
-    const isbnsToCheck = items.filter(b => b.isbn && (!b.published_year || b.published_year >= new Date().getFullYear() - 15)).map(b => b.isbn);
-    const originalYears = await lookupOriginalYears([...new Set(isbnsToCheck)]);
-    items = items.map(b => (b.isbn && originalYears[b.isbn] ? { ...b, published_year: originalYears[b.isbn] } : b));
-
     const currentYear = new Date().getFullYear();
+    const titlesToCheck = items.filter(b => b.title && (!b.published_year || b.published_year >= currentYear - 15)).map(b => b.title);
+    const originalYears = await lookupOriginalYears([...new Set(titlesToCheck)]);
+    items = items.map(b => {
+      const found = originalYears[(b.title || '').toLowerCase().trim()];
+      return found ? { ...b, published_year: found } : b;
+    });
+
     // Google Books' review data is sparse — plenty of legitimately popular,
     // recent books have zero ratingsCount on their listing, so requiring
-    // ratings unconditionally could (and did) wipe out the whole list.
-    // Try strict first (recent + some rating signal), and only relax one
-    // dimension at a time if that leaves too few — recency never gets
-    // dropped entirely (that's the whole point of "now").
+    // ratings unconditionally could (and did) wipe out the whole list. Try
+    // strict first (recent + some rating signal), and only relax further if
+    // that leaves too few — each tier below is strictly WIDER than the one
+    // before it (never narrower), ending in "just exclude classics" as the
+    // last resort rather than an empty section.
     const hasRatingSignal = b => b.ratingsCount >= 1 || b.averageRating > 0;
     let filtered = items.filter(b => (!b.published_year || b.published_year >= currentYear - 6) && hasRatingSignal(b));
-    if (filtered.length < 6) filtered = items.filter(b => !b.published_year || b.published_year >= currentYear - 10);
-    if (filtered.length < 6) filtered = items.filter(b => !b.published_year || b.published_year >= currentYear - 6);
+    if (filtered.length < 6) filtered = items.filter(b => (!b.published_year || b.published_year >= currentYear - 10) && hasRatingSignal(b));
+    if (filtered.length < 6) filtered = items.filter(b => !b.published_year || b.published_year >= currentYear - 15);
+    if (filtered.length < 6) filtered = items;
 
     filtered.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
 
