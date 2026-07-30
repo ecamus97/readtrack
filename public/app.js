@@ -426,15 +426,13 @@ function bookCoverHtml(cover_url) {
     : `<span class="placeholder">📕</span>`;
 }
 
-// Minimal card: cover + title + author only. All the detail (year, pages,
-// categories) and the actual "add" action live behind tapping the cover, in
-// showBookPreview() below — keeps the grid clean and scannable.
+// Cover-only card: just the cover art, nothing else. Title/author and all
+// other detail (year, pages, categories) live behind tapping the cover, in
+// showBookPreview() below — keeps the grid a clean shelf of covers.
 function renderBookGrid(books, source) {
   return books.map((b, i) => `
-    <div class="card book-card-minimal">
-      <div class="cover-wrap clickable" onclick="showBookPreview(${i}, '${source}')">${bookCoverHtml(b.cover_url)}</div>
-      <h3>${escapeHtml(b.title)}</h3>
-      <p>${escapeHtml(b.authors) || 'Unknown author'}</p>
+    <div class="card book-card-cover-only clickable" onclick="showBookPreview(${i}, '${source}')" title="${escapeHtml(b.title)}">
+      <div class="cover-wrap">${bookCoverHtml(b.cover_url)}</div>
     </div>
   `).join('') || '<p class="empty-state">No results. Try another search term.</p>';
 }
@@ -694,16 +692,14 @@ async function loadLibrary() {
   if (!document.getElementById('library-calendar-view').classList.contains('hidden')) renderLibraryCalendar();
 }
 
-// Minimal card: cover + title + author. Status, rating, dates, and the
+// Cover-only card. Title, author, status, rating, dates, and the
 // "Change status" action all live in the detail view now — tap the cover.
 function renderLibrary() {
   const rows = libraryFilter === 'todos' ? libraryCache : libraryCache.filter(b => b.status === libraryFilter);
   const container = document.getElementById('library');
   container.innerHTML = rows.map(b => `
-    <div class="card book-card-minimal clickable" onclick="openBookDetail(${b.id})">
+    <div class="card book-card-cover-only clickable" onclick="openBookDetail(${b.id})" title="${escapeHtml(b.title)}">
       <div class="cover-wrap">${bookCoverHtml(b.cover_url)}</div>
-      <h3>${escapeHtml(b.title)}</h3>
-      <p>${escapeHtml(b.authors) || ''}</p>
     </div>
   `).join('') || '<p class="empty-state">You don\'t have any books in this category yet.</p>';
 }
@@ -1047,15 +1043,14 @@ async function loadDashboard() {
       <div class="reading-now-grid">
         ${readingNow.map(b => `
           <div class="reading-now-card">
-            <div class="cover-wrap reading-now-cover clickable" onclick="openReadingNowDetail(${b.id})">${bookCoverHtml(b.cover_url)}</div>
+            <div class="cover-wrap reading-now-cover clickable" onclick="openReadingNowDetail(${b.id})" title="${escapeHtml(b.title)}">${bookCoverHtml(b.cover_url)}</div>
             <div class="reading-now-body">
-              <p class="reading-now-title">${escapeHtml(b.title)}</p>
-              <p class="reading-now-meta">${escapeHtml(b.authors) || 'Unknown author'}</p>
               <span class="status-badge ${b.club_name ? 'leyendo' : 'por_leer'}">${b.club_name ? `📚 ${escapeHtml(b.club_name)}` : '👤 Individual'}</span>
               <div class="reading-progress-row">
                 <div class="progress-bar reading-progress-bar"><div class="progress-bar-fill" style="width:${b.progress_percent || 0}%"></div></div>
-                <button class="link-btn reading-progress-pct" onclick="openProgressModal(${b.id}, ${b.progress_percent || 0})">${b.progress_percent || 0}%</button>
+                <span class="reading-progress-pct">${b.progress_percent || 0}%</span>
               </div>
+              <button class="secondary small reading-progress-btn" onclick="openProgressModal(${b.id}, ${b.progress_percent || 0})">Update progress</button>
             </div>
           </div>
         `).join('') || '<p class="empty-state">You\'re not reading anything right now. Head to Search & Add to start a book.</p>'}

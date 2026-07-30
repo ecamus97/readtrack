@@ -632,8 +632,14 @@ select {
       instead of scrolling), which is exactly why Profile content looked cut
       off with no way to reach the rest of it. */
     overflow-y: auto;
+    overflow-x: hidden; /* safety net: nothing inside main should ever be able
+      to silently bleed past the screen edge (that's what was happening to
+      the avatar/badge grids below — visible overflow with no way to reach
+      or even notice the cut-off part, since it isn't a scrollbar, it's just
+      content painted past the viewport). */
     -webkit-overflow-scrolling: touch;
     padding: 20px 16px 96px; /* extra bottom padding so content clears the fixed bottom nav */
+    max-width: 100%;
   }
 
   /* The tab bar becomes a fixed bottom bar, like a native app, since that's
@@ -706,6 +712,20 @@ select {
   .club-detail-heading { gap: 10px; }
   .detail-header { flex-direction: column; align-items: center; text-align: center; }
   .profile-header { flex-direction: column; text-align: center; }
+
+  /* Profile: the avatar-picker used a fixed 64px column track (auto-fill),
+     which on a narrow phone can compute a column count that's a hair too
+     wide for the real available width — the grid then paints its last
+     column past the edge of the screen instead of wrapping it (silent
+     overflow, no scrollbar, looks like "avatars don't fit"). Switching to
+     minmax(1fr) columns means every column shares the container's actual
+     width exactly, so it can never overflow. */
+  .avatar-picker {
+    grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+    max-width: 100%;
+  }
+  .avatar-option { width: 100%; height: auto; aspect-ratio: 1; }
+  .badges-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
 }
 
 /* Installed to the home screen (PWA standalone mode), iOS overlays the
@@ -978,9 +998,9 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
   .header-username { display: none; } /* header is tight on mobile — name still shows on the Home greeting */
 }
 
-/* ---------- Minimal book cards (Library / Search / Recommended) ---------- */
-.book-card-minimal h3 { margin-top: 6px; }
-.book-card-minimal p { margin-bottom: 2px; }
+/* ---------- Cover-only book cards (Library / Search / Recommended) ---------- */
+.book-card-cover-only { padding: 8px; gap: 0; }
+.book-card-cover-only .cover-wrap { margin: 0; }
 
 /* ---------- Reading progress (Home / Currently reading) ---------- */
 .reading-progress-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
@@ -991,8 +1011,51 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
   background: var(--border);
 }
 .reading-progress-pct {
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 700;
   color: var(--primary-dark);
   white-space: nowrap;
+}
+.reading-progress-btn { margin-top: 6px; align-self: flex-start; }
+
+/* Custom range slider so the thumb visually reaches the true left/right
+   edges of the track (the native default leaves a gap at both ends on
+   iOS/Android because the browser insets the thumb's travel by half its
+   own width). Resetting appearance and taking over the thumb ourselves
+   makes it travel the full 0–100% width. */
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  margin: 10px 0;
+  padding: 0;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(38,34,32,0.35);
+  cursor: pointer;
+  margin-top: -8px;
+}
+input[type=range]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+}
+input[type=range]::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(38,34,32,0.35);
+  cursor: pointer;
 }
