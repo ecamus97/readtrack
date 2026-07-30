@@ -638,16 +638,23 @@ select {
       or even notice the cut-off part, since it isn't a scrollbar, it's just
       content painted past the viewport). */
     -webkit-overflow-scrolling: touch;
-    padding: 20px 16px 96px; /* extra bottom padding so content clears the fixed bottom nav */
+    padding: 20px 16px 16px;
     max-width: 100%;
   }
 
-  /* The tab bar becomes a fixed bottom bar, like a native app, since that's
-     easier to reach one-handed than a top bar on a phone. */
+  /* The tab bar looks like a fixed bottom bar, but it's actually a normal
+     flex child at the end of #appScreen's column (header, then main flex:1,
+     then nav) rather than position:fixed. Fixed positioning combined with
+     100dvh caused the bar to visibly detach from the true bottom edge right
+     after certain interactions (closing a modal, switching tabs) because
+     Safari recomputes the address-bar-driven viewport height and a fixed
+     element doesn't always get repositioned in the same paint as that
+     resize. Being a normal flex item sidesteps the whole problem: nav's
+     position is derived directly from #appScreen's own (already-correct)
+     height, every single frame, with no separate fixed-position math to
+     get out of sync. */
   nav {
-    position: fixed;
-    left: 0; right: 0; bottom: 0;
-    z-index: 30;
+    flex-shrink: 0;
     padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
     border-bottom: none;
     border-top: 1px solid var(--border);
@@ -999,8 +1006,19 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
 }
 
 /* ---------- Cover-only book cards (Library / Search / Recommended) ---------- */
-.book-card-cover-only { padding: 8px; gap: 0; }
-.book-card-cover-only .cover-wrap { margin: 0; }
+.book-card-cover-only { padding: 8px; gap: 0; background: none; border: none; box-shadow: none; }
+.book-card-cover-only:hover { box-shadow: none; transform: none; }
+/* The card used to force covers into a fixed, short, wide box (height:210px
+   on desktop, 96px on the mobile 3-col grid) and crop them with object-fit,
+   which squashed/cut off tall book covers. A book cover should just render
+   at its natural portrait aspect ratio, like a real book — no cropping box. */
+.book-card-cover-only .cover-wrap {
+  margin: 0;
+  height: auto;
+  aspect-ratio: 2 / 3;
+  background: var(--primary-light);
+}
+.book-card-cover-only .cover-wrap img { object-fit: cover; }
 
 /* ---------- Reading progress (Home / Currently reading) ---------- */
 .reading-progress-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
