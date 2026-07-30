@@ -674,17 +674,15 @@ async function averageReadYear(user_id) {
 // Recommendations used to be driven by computeStats().top_generos, which
 // only counts books with status='leido' — for a newer user (or one who adds
 // books they're currently reading/plan to read without marking many as
-// finished yet), that's a tiny, unrepresentative sample, which is why
-// recommendations could end up generic and skew toward whatever OpenLibrary
-// considers the "default" ordering for a subject (often old, public-domain
-// classics with the most editions catalogued — NOT what the user is
-// actually into). Using every owned book, regardless of status, reflects
-// taste much sooner and weighs recency correctly for users whose library is
-// mostly recent releases they haven't finished yet.
+// finished yet), that's a tiny, unrepresentative sample. Explicitly
+// requested to be based on finished (status='leido') books only, once the
+// user had enough of those logged — genre detection was already working
+// well from this same set; the year signal specifically was the one still
+// getting pulled off track without this restriction.
 async function libraryTaste(user_id) {
   const rows = await db.all(`
     SELECT b.categories, b.published_year FROM user_books ub JOIN books b ON b.id = ub.book_id
-    WHERE ub.user_id = ?
+    WHERE ub.user_id = ? AND ub.status = 'leido'
   `, [user_id]);
 
   const genreCounts = {};
@@ -871,19 +869,24 @@ app.get('/api/popular', async (req, res) => {
           averageRating: info.averageRating || 0
         };
       })
-      .filter(b => !b.published_year || b.published_year >= currentYear - 6)
-      // Google's publishedDate is per-EDITION, not per-work — a random 2021
-      // reprint of Don Quixote passes the year check above just fine. What
-      // actually distinguishes a genuinely popular recent release from an
-      // old public-domain classic's anonymous reissue is that real reader
-      // ratings accumulate on the specific edition people are actually
-      // buying/reading — reprints almost never have any. Requiring at least
-      // a handful of ratings filters those out.
-      .filter(b => b.ratingsCount >= 5);
+      .filter(b => !b.published_year || b.published_year >= currentYear - 6);
 
-    items.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
+    // Google's publishedDate is per-EDITION, not per-work — a random 2021
+    // reprint of Don Quixote passes the year check above just fine. What
+    // actually distinguishes a genuinely popular recent release from an old
+    // public-domain classic's anonymous reissue is that real reader ratings
+    // accumulate on the specific edition people are actually buying/reading
+    // — reprints almost never have any. Requiring a couple of ratings
+    // filters those out. Requiring 5 turned out to zero out the whole list
+    // too often (a lot of legitimately popular recent books still don't
+    // have many Google Books ratings on that specific listing), so this
+    // only filters out zero-rating results, and only falls back to
+    // including those too if that still leaves too few to show anything.
+    let popular = items.filter(b => b.ratingsCount >= 1);
+    if (popular.length < 6) popular = items;
+    popular.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
 
-    res.json({ books: items.slice(0, 12).map(({ ratingsCount, averageRating, ...b }) => b) });
+    res.json({ books: popular.slice(0, 12).map(({ ratingsCount, averageRating, ...b }) => b) });
   } catch (err) {
     console.error('Popular lookup failed:', err.message);
     res.json({ books: [] });
