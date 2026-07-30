@@ -714,10 +714,25 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
   const targetLimit = limit || 8;
   let candidates;
 
-  if (yearFrom || yearTo) {
-    const from = yearFrom || 1000;
-    const to = yearTo || new Date().getFullYear();
-    const q = `subject:"${subjectName}" AND first_publish_year:[${from} TO ${to}]`;
+  // A hard year filter is requested either explicitly (yearFrom/yearTo, from
+  // the browse filters) or implicitly (preferredYear, from the user's actual
+  // reading history for recommendations) — both go through search.json with
+  // a first_publish_year range, which is filtered server-side by OpenLibrary
+  // and reflects the WORK's original year (not an edition/reprint's, unlike
+  // /subjects .../published_in). Earlier this fell back to "just use
+  // everything" when too few close matches existed, which is exactly how
+  // 1800s books kept slipping into recommendations for a user who reads
+  // nothing older than 2006 — no such fallback here anymore; a smaller,
+  // correctly-scoped result beats a wrong one.
+  let from = yearFrom;
+  let to = yearTo;
+  if (!from && !to && preferredYear) {
+    from = preferredYear - 15;
+    to = Math.max(preferredYear + 15, new Date().getFullYear());
+  }
+
+  if (from || to) {
+    const q = `subject:"${subjectName}" AND first_publish_year:[${from || 1000} TO ${to || new Date().getFullYear()}]`;
     const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${targetLimit * 3}&fields=key,title,author_name,cover_i,first_publish_year`;
     const r = await fetchWithTimeout(url, 8000);
     if (!r.ok) return [];
@@ -742,21 +757,8 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
 
   let selected;
   if (preferredYear) {
-    const withYear = candidates.filter(w => w.first_publish_year);
-    const withoutYear = candidates.filter(w => !w.first_publish_year);
-    // Only ever consider books reasonably close to the user's actual era —
-    // recommendations used to fill the remaining ~40% of results with a
-    // random shuffle of whatever didn't make the "close" cut, which could
-    // (and did) include books decades away from anything the user reads.
-    // Falls back to the full set only if the strict window leaves too few.
-    const maxAgeGap = 40;
-    let relevant = withYear.filter(w => Math.abs(w.first_publish_year - preferredYear) <= maxAgeGap);
-    if (relevant.length < targetLimit) relevant = withYear;
-    relevant.sort((a, b) => Math.abs(a.first_publish_year - preferredYear) - Math.abs(b.first_publish_year - preferredYear));
-
-    const pool = relevant.slice(0, targetLimit * 2);
-    const fillers = relevant.length >= targetLimit ? [] : shuffleArray(withoutYear).slice(0, targetLimit - relevant.length);
-    selected = [...shuffleArray(pool), ...fillers];
+    candidates.sort((a, b) => Math.abs((a.first_publish_year || 0) - preferredYear) - Math.abs((b.first_publish_year || 0) - preferredYear));
+    selected = shuffleArray(candidates.slice(0, targetLimit * 2));
   } else if (!yearFrom && !yearTo) {
     // No signal about the user's era preference at all, and no explicit year
     // filter requested — default to the most recently published books
