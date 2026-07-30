@@ -627,15 +627,19 @@ async function loadRecommended() {
   const section = document.getElementById('recommendedSection');
   const container = document.getElementById('recommended');
   if (window.__clubModeClubId) { section.classList.add('hidden'); return; } // keep the search tab focused on the club pick
+  section.classList.remove('hidden'); // always visible — an empty state here is informative, not something to hide
   try {
     const data = await api(`/api/recommendations`);
-    if (!data.subject || !data.books.length) { section.classList.add('hidden'); return; }
-    section.classList.remove('hidden');
+    if (!data.subject || !data.books.length) {
+      document.getElementById('recommendedLabel').textContent = 'Recommended for you';
+      container.innerHTML = '<p class="empty-state">Mark a few books as "Read" to get personalized recommendations.</p>';
+      return;
+    }
     document.getElementById('recommendedLabel').textContent = `Recommended for you — based on ${data.subject}`;
     window.__recommendedCache = data.books;
     container.innerHTML = renderBookGrid(data.books, 'rec');
   } catch (e) {
-    section.classList.add('hidden');
+    container.innerHTML = `<p class="empty-state">Couldn't load recommendations: ${escapeHtml(e.message)}</p>`;
   }
 }
 
@@ -648,16 +652,19 @@ async function loadPopular() {
   const section = document.getElementById('popularSection');
   const container = document.getElementById('popular');
   if (window.__clubModeClubId) { section.classList.add('hidden'); return; }
+  section.classList.remove('hidden'); // always visible — an empty state here is informative, not something to hide
   try {
     const params = new URLSearchParams();
     if (activeCategory) params.set('category', activeCategory);
     const data = await api(`/api/popular?${params.toString()}`);
-    if (!data.books.length) { section.classList.add('hidden'); return; }
-    section.classList.remove('hidden');
+    if (!data.books.length) {
+      container.innerHTML = '<p class="empty-state">No popular picks found right now — try again in a moment.</p>';
+      return;
+    }
     window.__popularCache = data.books;
     container.innerHTML = renderBookGrid(data.books, 'popular');
   } catch (e) {
-    section.classList.add('hidden');
+    container.innerHTML = `<p class="empty-state">Couldn't load popular picks: ${escapeHtml(e.message)}</p>`;
   }
 }
 

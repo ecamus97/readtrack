@@ -852,22 +852,20 @@ app.get('/api/popular', async (req, res) => {
   // orderBy=relevance (Google's default ranking, which leans toward
   // well-known/discussed books) gives a pool that's actually likely to have
   // real ratings, unlike orderBy=newest, which mostly surfaces obscure
-  // brand-new listings (barely anyone has rated those yet either). Fetching
-  // two pages instead of one gives enough of a pool to survive the strict
-  // filtering below without ever needing a "just show everything" fallback.
-  const base = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&orderBy=relevance&maxResults=40`;
+  // brand-new listings (barely anyone has rated those yet either). One
+  // page of 40 (not two — a second parallel request doubled our Google
+  // Books call volume, which without an API key configured risks hitting
+  // their anonymous rate limit and silently coming back empty).
+  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&orderBy=relevance&maxResults=40`);
   try {
-    const [r1, r2] = await Promise.all([
-      fetchWithTimeout(withGoogleKey(`${base}&startIndex=0`), 6000),
-      fetchWithTimeout(withGoogleKey(`${base}&startIndex=40`), 6000)
-    ]);
-    const [d1, d2] = await Promise.all([r1.json(), r2.json()]);
-    if ((!r1.ok || d1.error) && (!r2.ok || d2.error)) {
-      console.error('Google Books (popular) returned an error:', r1.status, JSON.stringify(d1.error || d1));
+    const r = await fetchWithTimeout(url, 6000);
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      console.error('Google Books (popular) returned an error:', r.status, JSON.stringify(data.error || data));
       return res.json({ books: [] });
     }
     const currentYear = new Date().getFullYear();
-    const items = [...(d1.items || []), ...(d2.items || [])]
+    const items = (data.items || [])
       .map(item => {
         const info = item.volumeInfo || {};
         const year = info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null;
