@@ -709,23 +709,56 @@ async function libraryTaste(user_id) {
 // response already includes, so it can be filtered client-side without
 // needing the separate search.json endpoint at all.
 //
-// search.json's `subject:"X"` field search was tried for year-filtered
-// requests, but that field is a free-text-ish match with much worse recall
-// than the curated /subjects/ index — for some genre+year combos it returned
-// almost nothing once already-owned titles were excluded (e.g. recommendations
-// collapsing to a single book). /subjects/ is the more reliable candidate
-// source in every case, so it's used everywhere now, with a bigger over-fetch
-// and the year filtering (exact range, or nearest-to-preferredYear) applied
-// client-side to the results.
+// search.json's `subject:"X"` field search was tried as the SOLE candidate
+// source for year-filtered requests, but that field is a much looser match
+// than the curated /subjects/ index and produced unreliable result-to-input
+// mapping — dropped as the primary source. But /subjects/ has the opposite
+// problem for compound/uncommon genre strings (e.g. "Juvenile Fiction /
+// Fantasy" from Google Books' categories) — its slug lookup requires a
+// near-exact canonical subject name, and a slug that doesn't exist just
+// comes back with zero works. So /subjects/ is tried first (better curation,
+// used alone whenever it already returns enough), and search.json is only
+// used to ADD more candidates to the pool when /subjects/ came back thin —
+// never as a replacement, and never followed by a "drop the year filter"
+// escape hatch.
+async function fetchSubjectSearchJson(subjectName, limit) {
+  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(`subject:"${subjectName}"`)}&limit=${limit}&fields=key,title,author_name,cover_i,first_publish_year`;
+  try {
+    const r = await fetchWithTimeout(url, 8000);
+    if (!r.ok) return [];
+    const data = await r.json();
+    return (data.docs || []).map(d => ({
+      key: d.key,
+      title: d.title,
+      authors: (d.author_name || []).map(name => ({ name })),
+      cover_id: d.cover_i,
+      first_publish_year: d.first_publish_year
+    }));
+  } catch {
+    return [];
+  }
+}
+
 async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear, yearFrom, yearTo) {
   const targetLimit = limit || 8;
 
   const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
   const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 15}`, 8000);
-  if (!r.ok) return [];
-  const data = await r.json();
-  let candidates = (data.works || [])
-    .filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
+  let works = r.ok ? (await r.json()).works || [] : [];
+
+  // Thin result from the curated slug lookup (missing slug, or a genre the
+  // /subjects/ index just doesn't cover well) — widen the pool via
+  // search.json's looser subject-field match, merged in rather than
+  // replacing what /subjects/ already found.
+  if (works.length < targetLimit * 5) {
+    const extra = await fetchSubjectSearchJson(subjectName, targetLimit * 15);
+    const seen = new Set(works.map(w => w.key));
+    for (const w of extra) {
+      if (!seen.has(w.key)) { works.push(w); seen.add(w.key); }
+    }
+  }
+
+  let candidates = works.filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
 
   // A hard year filter, requested either explicitly (yearFrom/yearTo, from
   // the browse filters) or implicitly (preferredYear, from the user's actual
@@ -799,10 +832,13 @@ app.get('/api/recommendations', async (req, res) => {
 
   try {
     const books = await fetchSubjectBooks(topGenre, alreadyOwned, 8, avgYear);
-    res.json({ subject: topGenre, books });
+    res.json({ subject: topGenre, books, hasReadBooks });
   } catch (err) {
     console.error('Recommendations lookup failed:', err.message);
-    res.json({ subject: topGenre, books: [] });
+    // hasReadBooks must still be included here — omitting it made the
+    // frontend show "mark some books as read" even when the user has
+    // plenty of finished books and this was just an upstream fetch hiccup.
+    res.json({ subject: topGenre, books: [], hasReadBooks });
   }
 });
 
