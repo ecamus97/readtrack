@@ -449,6 +449,7 @@ document.querySelectorAll('#yearFilters .chip').forEach((chip, i) => {
       activeYearFrom = null;
       activeYearTo = null;
       runFilteredBrowse();
+      loadPopular(); // "Popular now" also respects the year filter
       return;
     }
     chip.classList.add('active');
@@ -460,6 +461,7 @@ document.querySelectorAll('#yearFilters .chip').forEach((chip, i) => {
     activeYearTo = def.to;
     document.getElementById('searchInput').value = '';
     runFilteredBrowse();
+    loadPopular();
   };
 });
 
@@ -471,6 +473,7 @@ document.getElementById('yearRangeApplyBtn').onclick = () => {
   activeYearTo = to;
   document.getElementById('searchInput').value = '';
   runFilteredBrowse();
+  loadPopular();
 };
 
 function runFilteredBrowse() {
@@ -646,10 +649,11 @@ async function loadRecommended() {
 }
 
 // Uses Google Books' ratingsCount/averageRating (OpenLibrary doesn't track
-// either), restricted to roughly the last 6 years — "popular" here means
-// "popular among recent releases", not just popular ever. Re-runs whenever
-// a category filter is toggled so it can reflect that pick too, but doesn't
-// depend on one (falls back to a general "fiction" query).
+// either), restricted by default to roughly the last 6 years — "popular"
+// here means "popular among recent releases", not just popular ever.
+// Re-runs whenever the category OR year filter is toggled so it reflects
+// both, but doesn't depend on either (falls back to a general recent-
+// fiction query).
 async function loadPopular() {
   const section = document.getElementById('popularSection');
   const container = document.getElementById('popular');
@@ -658,6 +662,8 @@ async function loadPopular() {
   try {
     const params = new URLSearchParams();
     if (activeCategory) params.set('category', activeCategory);
+    if (activeYearFrom) params.set('yearFrom', activeYearFrom);
+    if (activeYearTo) params.set('yearTo', activeYearTo);
     const data = await api(`/api/popular?${params.toString()}`);
     if (!data.books.length) {
       container.innerHTML = '<p class="empty-state">No popular picks found right now — try again in a moment.</p>';

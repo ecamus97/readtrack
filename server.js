@@ -891,7 +891,7 @@ async function lookupOriginalYears(titles) {
 }
 
 app.get('/api/popular', async (req, res) => {
-  const { category } = req.query;
+  const { category, yearFrom, yearTo } = req.query;
   const q = category ? `subject:${category}` : 'subject:fiction';
   // Random startIndex each call (instead of always 0) so hitting "refresh"
   // actually pulls a different slice of Google's results, not just the same
@@ -941,18 +941,30 @@ app.get('/api/popular', async (req, res) => {
       return found ? { ...b, published_year: found } : b;
     });
 
-    // Google Books' review data is sparse — plenty of legitimately popular,
-    // recent books have zero ratingsCount on their listing, so requiring
-    // ratings unconditionally could (and did) wipe out the whole list. Try
-    // strict first (recent + some rating signal), and only relax further if
-    // that leaves too few — each tier below is strictly WIDER than the one
-    // before it (never narrower), ending in "just exclude classics" as the
-    // last resort rather than an empty section.
     const hasRatingSignal = b => b.ratingsCount >= 1 || b.averageRating > 0;
-    let filtered = items.filter(b => (!b.published_year || b.published_year >= currentYear - 6) && hasRatingSignal(b));
-    if (filtered.length < 6) filtered = items.filter(b => (!b.published_year || b.published_year >= currentYear - 10) && hasRatingSignal(b));
-    if (filtered.length < 6) filtered = items.filter(b => !b.published_year || b.published_year >= currentYear - 15);
-    if (filtered.length < 6) filtered = items;
+
+    let filtered;
+    if (yearFrom || yearTo) {
+      // An explicit year filter is a hard requirement from the user, not a
+      // soft "prefer recent" default — it never gets widened beyond what
+      // was actually asked for, only the rating requirement gets relaxed
+      // if too few books in that exact range have rating data.
+      const from = parseInt(yearFrom) || 0;
+      const to = parseInt(yearTo) || currentYear;
+      const inRange = b => !!b.published_year && b.published_year >= from && b.published_year <= to;
+      filtered = items.filter(b => inRange(b) && hasRatingSignal(b));
+      if (filtered.length < 6) filtered = items.filter(inRange);
+    } else {
+      // No explicit year filter — default to "recent", widening the window
+      // in steps if that leaves too few, but NEVER dropping the year
+      // restriction altogether (that's exactly how corrected-to-ancient
+      // classics kept slipping back in via the last-resort fallback this
+      // replaces — always excluding classics isn't enough on its own if
+      // there's no floor on how old "popular now" is allowed to mean).
+      filtered = items.filter(b => (!b.published_year || b.published_year >= currentYear - 6) && hasRatingSignal(b));
+      if (filtered.length < 6) filtered = items.filter(b => (!b.published_year || b.published_year >= currentYear - 10) && hasRatingSignal(b));
+      if (filtered.length < 6) filtered = items.filter(b => !b.published_year || b.published_year >= currentYear - 15);
+    }
 
     filtered.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
 
