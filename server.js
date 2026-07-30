@@ -742,9 +742,18 @@ async function fetchSubjectSearchJson(subjectName, limit) {
 async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear, yearFrom, yearTo) {
   const targetLimit = limit || 8;
 
-  const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
-  const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 15}`, 8000);
-  let works = r.ok ? (await r.json()).works || [] : [];
+  // A network hiccup or timeout hitting OpenLibrary here used to bubble up
+  // and blow up the whole request (browse showing "Could not reach Open
+  // Library" instead of just a thin/empty result) — caught locally now so a
+  // single slow/failed OL call degrades to "no candidates from this source"
+  // rather than failing the entire browse/recommendation request.
+  let works = [];
+  try {
+    const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_'))}.json?limit=${targetLimit * 15}`, 8000);
+    if (r.ok) works = (await r.json()).works || [];
+  } catch (err) {
+    console.error('OpenLibrary /subjects/ lookup failed:', err.message);
+  }
 
   // Thin result from the curated slug lookup (missing slug, or a genre the
   // /subjects/ index just doesn't cover well) — widen the pool via
