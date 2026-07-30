@@ -852,6 +852,17 @@ app.get('/api/browse', async (req, res) => {
 // tagged this way, while classic reissues almost always are.
 const CLASSIC_CATEGORY_HINTS = ['classic', 'literary criticism', 'literary collections'];
 
+// Google Books' listing title for a reissue is often decorated with
+// subtitle/edition noise ("Don Quixote (Barnes & Noble Classics Series)",
+// "Pride and Prejudice: The Annotated Edition") that doesn't literally match
+// OpenLibrary's plain title ("Don Quixote"). An exact-phrase title search
+// was silently failing to match on exactly the reissues this needs to
+// catch, leaving their wrong (edition) year in place. Stripping everything
+// from the first ":" or "(" onward gets back to the plain, matchable title.
+function normalizeTitle(title) {
+  return (title || '').split(/[:(]/)[0].trim().toLowerCase();
+}
+
 // Cross-checks a batch of titles against OpenLibrary's search index to get
 // each book's real, WORK-level first_publish_year — this is the only
 // reliable fix for the "Don Quixote shows up as a 2021 release" problem.
@@ -859,35 +870,26 @@ const CLASSIC_CATEGORY_HINTS = ['classic', 'literary criticism', 'literary colle
 // and neither category tags nor ratings data reliably distinguish a classic
 // reissue from an actual new release, so this is worth the extra request.
 // Matching by ISBN was tried first, but OpenLibrary's ISBN coverage for
-// random modern paperback printings is spotty — a lot of lookups just came
-// back empty, silently leaving the wrong (edition) year in place. Matching
-// by title has much better coverage precisely for the classics this needs
-// to catch (obscure ISBN, extremely well-known title).
+// random modern paperback printings is spotty. A single combined OR query
+// was tried next, but mapping each returned doc back to the title that
+// matched it is unreliable (OL doesn't echo back which query term hit) —
+// so this does one search per unique normalized title instead, in parallel,
+// trusting OpenLibrary's own relevance ranking to surface the right work
+// for what's usually a well-known, unambiguous title.
 async function lookupOriginalYears(titles) {
-  if (!titles.length) return {};
-  const q = titles.map(t => `title:"${t.replace(/"/g, '')}"`).join(' OR ');
-  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&fields=title,first_publish_year&limit=${titles.length * 2}`;
-  try {
-    const r = await fetchWithTimeout(url, 6000);
-    if (!r.ok) return {};
-    const data = await r.json();
-    const byTitle = {};
-    for (const doc of data.docs || []) {
-      const key = (doc.title || '').toLowerCase().trim();
-      // If a title matches multiple OpenLibrary works (common for reissues
-      // of the same classic under slightly different work records), keep
-      // the OLDEST year found — that's the one that actually identifies it
-      // as a classic; a coincidentally-matching modern book with the same
-      // title isn't going to also have a suspiciously ancient duplicate.
-      if (!key) continue;
-      if (!(key in byTitle) || (doc.first_publish_year && doc.first_publish_year < byTitle[key])) {
-        byTitle[key] = doc.first_publish_year || byTitle[key] || null;
-      }
+  const normalized = [...new Set(titles.map(normalizeTitle).filter(Boolean))];
+  const results = await Promise.all(normalized.map(async (title) => {
+    const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(title)}&fields=title,first_publish_year&limit=1`;
+    try {
+      const r = await fetchWithTimeout(url, 5000);
+      if (!r.ok) return [title, null];
+      const data = await r.json();
+      return [title, data.docs?.[0]?.first_publish_year || null];
+    } catch {
+      return [title, null];
     }
-    return byTitle;
-  } catch {
-    return {};
-  }
+  }));
+  return Object.fromEntries(results.filter(([, year]) => year !== null));
 }
 
 app.get('/api/popular', async (req, res) => {
@@ -935,9 +937,9 @@ app.get('/api/popular', async (req, res) => {
     // date, to keep this to a reasonable number of lookups.
     const currentYear = new Date().getFullYear();
     const titlesToCheck = items.filter(b => b.title && (!b.published_year || b.published_year >= currentYear - 15)).map(b => b.title);
-    const originalYears = await lookupOriginalYears([...new Set(titlesToCheck)]);
+    const originalYears = await lookupOriginalYears(titlesToCheck);
     items = items.map(b => {
-      const found = originalYears[(b.title || '').toLowerCase().trim()];
+      const found = originalYears[normalizeTitle(b.title)];
       return found ? { ...b, published_year: found } : b;
     });
 
