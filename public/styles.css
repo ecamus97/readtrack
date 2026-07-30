@@ -626,6 +626,11 @@ select {
 
   main {
     flex: 1;
+    order: 1; /* HTML order is header, nav, main — but we want it to LOOK like
+      header, main, nav (nav pinned to the bottom like a native tab bar).
+      Flex order lets us keep nav a normal (non-fixed) flow element while
+      still visually placing it after main, instead of between header and
+      main where it sits in the raw markup. */
     min-height: 0; /* THE key fix: without this, a flex item won't shrink below
       its content's height, so overflow-y:auto never actually kicks in — main
       just grows to fit everything (get clipped by body's overflow:hidden
@@ -655,6 +660,7 @@ select {
      get out of sync. */
   nav {
     flex-shrink: 0;
+    order: 2; /* see main's `order` comment above — this puts nav visually last */
     padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
     border-bottom: none;
     border-top: 1px solid var(--border);
