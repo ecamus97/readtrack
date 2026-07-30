@@ -705,54 +705,44 @@ async function libraryTaste(user_id) {
 // date, not the work's original one — a reissue/reprint of a centuries-old
 // classic can easily have a 2020s edition, so "published_in=2020-2029" was
 // happily returning things like Don Quixote. The actual original-publication
-// year lives in `first_publish_year`, which is only queryable via the
-// search API's Solr-style range syntax (first_publish_year:[X TO Y]), not
-// the subjects endpoint — so year-filtered browsing goes through
-// search.json instead, and the plain subjects endpoint is only used when no
-// year filter is requested.
+// year lives in `first_publish_year`, which every work in the /subjects/
+// response already includes, so it can be filtered client-side without
+// needing the separate search.json endpoint at all.
+//
+// search.json's `subject:"X"` field search was tried for year-filtered
+// requests, but that field is a free-text-ish match with much worse recall
+// than the curated /subjects/ index — for some genre+year combos it returned
+// almost nothing once already-owned titles were excluded (e.g. recommendations
+// collapsing to a single book). /subjects/ is the more reliable candidate
+// source in every case, so it's used everywhere now, with a bigger over-fetch
+// and the year filtering (exact range, or nearest-to-preferredYear) applied
+// client-side to the results.
 async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear, yearFrom, yearTo) {
   const targetLimit = limit || 8;
-  let candidates;
 
-  // A hard year filter is requested either explicitly (yearFrom/yearTo, from
+  const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
+  const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 15}`, 8000);
+  if (!r.ok) return [];
+  const data = await r.json();
+  let candidates = (data.works || [])
+    .filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
+
+  // A hard year filter, requested either explicitly (yearFrom/yearTo, from
   // the browse filters) or implicitly (preferredYear, from the user's actual
-  // reading history for recommendations) — both go through search.json with
-  // a first_publish_year range, which is filtered server-side by OpenLibrary
-  // and reflects the WORK's original year (not an edition/reprint's, unlike
-  // /subjects .../published_in). Earlier this fell back to "just use
-  // everything" when too few close matches existed, which is exactly how
-  // 1800s books kept slipping into recommendations for a user who reads
-  // nothing older than 2006 — no such fallback here anymore; a smaller,
-  // correctly-scoped result beats a wrong one.
+  // reading history for recommendations). No fallback to "just use
+  // everything" when too few close matches exist — that's exactly how 1800s
+  // books kept slipping into recommendations for a user who reads nothing
+  // older than 2006. A smaller, correctly-scoped result beats a wrong one.
   let from = yearFrom;
   let to = yearTo;
   if (!from && !to && preferredYear) {
-    from = preferredYear - 15;
-    to = Math.max(preferredYear + 15, new Date().getFullYear());
+    from = preferredYear - 20;
+    to = Math.max(preferredYear + 20, new Date().getFullYear());
   }
-
   if (from || to) {
-    const q = `subject:"${subjectName}" AND first_publish_year:[${from || 1000} TO ${to || new Date().getFullYear()}]`;
-    const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${targetLimit * 3}&fields=key,title,author_name,cover_i,first_publish_year`;
-    const r = await fetchWithTimeout(url, 8000);
-    if (!r.ok) return [];
-    const data = await r.json();
-    candidates = (data.docs || [])
-      .filter(d => !excludeTitles || !excludeTitles.has((d.title || '').toLowerCase()))
-      .map(d => ({
-        key: d.key,
-        title: d.title,
-        authors: (d.author_name || []).map(name => ({ name })),
-        cover_id: d.cover_i,
-        first_publish_year: d.first_publish_year
-      }));
-  } else {
-    const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
-    const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`, 8000);
-    if (!r.ok) return [];
-    const data = await r.json();
-    candidates = (data.works || [])
-      .filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
+    const lo = from || 1000;
+    const hi = to || new Date().getFullYear();
+    candidates = candidates.filter(w => w.first_publish_year && w.first_publish_year >= lo && w.first_publish_year <= hi);
   }
 
   let selected;

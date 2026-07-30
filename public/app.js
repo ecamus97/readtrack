@@ -401,7 +401,7 @@ function refreshCurrentView(name) {
   const active = name || currentViewName();
   if (active === 'dashboard') loadDashboard();
   if (active === 'library') loadLibrary();
-  if (active === 'search') { loadRecommended(); loadPopular(); updateClubModeBanner(); }
+  if (active === 'search') { loadRecommended(); updateClubModeBanner(); }
   if (active === 'social') loadSocial();
   if (active === 'profile') loadProfile();
   if (active === 'club-detail') loadClubDetail();
@@ -433,7 +433,6 @@ document.querySelectorAll('#categoryFilters .chip').forEach(chip => {
     if (activeCategory) chip.classList.add('active');
     document.getElementById('searchInput').value = '';
     runFilteredBrowse();
-    loadPopular(); // "Popular now" also respects the category filter
   };
 });
 
@@ -449,7 +448,6 @@ document.querySelectorAll('#yearFilters .chip').forEach((chip, i) => {
       activeYearFrom = null;
       activeYearTo = null;
       runFilteredBrowse();
-      loadPopular(); // "Popular now" also respects the year filter
       return;
     }
     chip.classList.add('active');
@@ -461,7 +459,6 @@ document.querySelectorAll('#yearFilters .chip').forEach((chip, i) => {
     activeYearTo = def.to;
     document.getElementById('searchInput').value = '';
     runFilteredBrowse();
-    loadPopular();
   };
 });
 
@@ -473,7 +470,6 @@ document.getElementById('yearRangeApplyBtn').onclick = () => {
   activeYearTo = to;
   document.getElementById('searchInput').value = '';
   runFilteredBrowse();
-  loadPopular();
 };
 
 function runFilteredBrowse() {
@@ -487,7 +483,6 @@ function runFilteredBrowse() {
 
 document.getElementById('resultsRefreshBtn').onclick = () => runFilteredBrowse();
 document.getElementById('recommendedRefreshBtn').onclick = () => loadRecommended();
-document.getElementById('popularRefreshBtn').onclick = () => loadPopular();
 
 function bookCoverHtml(cover_url) {
   return cover_url
@@ -510,7 +505,6 @@ function renderBookGrid(books, source) {
 // free-text search and category/year browse results (they share one cache).
 function cacheForSource(source) {
   if (source === 'rec') return window.__recommendedCache;
-  if (source === 'popular') return window.__popularCache;
   return window.__searchCache;
 }
 
@@ -648,33 +642,9 @@ async function loadRecommended() {
   }
 }
 
-// Uses Google Books' ratingsCount/averageRating (OpenLibrary doesn't track
-// either), restricted by default to roughly the last 6 years — "popular"
-// here means "popular among recent releases", not just popular ever.
-// Re-runs whenever the category OR year filter is toggled so it reflects
-// both, but doesn't depend on either (falls back to a general recent-
-// fiction query).
-async function loadPopular() {
-  const section = document.getElementById('popularSection');
-  const container = document.getElementById('popular');
-  if (window.__clubModeClubId) { section.classList.add('hidden'); return; }
-  section.classList.remove('hidden'); // always visible — an empty state here is informative, not something to hide
-  try {
-    const params = new URLSearchParams();
-    if (activeCategory) params.set('category', activeCategory);
-    if (activeYearFrom) params.set('yearFrom', activeYearFrom);
-    if (activeYearTo) params.set('yearTo', activeYearTo);
-    const data = await api(`/api/popular?${params.toString()}`);
-    if (!data.books.length) {
-      container.innerHTML = '<p class="empty-state">No popular picks found right now — try again in a moment.</p>';
-      return;
-    }
-    window.__popularCache = data.books;
-    container.innerHTML = renderBookGrid(data.books, 'popular');
-  } catch (e) {
-    container.innerHTML = `<p class="empty-state">Couldn't load popular picks: ${escapeHtml(e.message)}</p>`;
-  }
-}
+// "Popular now" is disabled for now (see /api/popular in server.js — the
+// endpoint is left in place but unused) after repeated trouble getting it to
+// reliably exclude old classics with deceptive recent edition dates.
 
 function ratingFieldHtml(name, value, id) {
   return `

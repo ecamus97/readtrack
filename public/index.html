@@ -21,7 +21,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=14">
+<link rel="stylesheet" href="styles.css?v=15">
 </head>
 <body>
   <!-- The anon key is meant to be public (it's what every Supabase JS-SDK
@@ -189,14 +189,6 @@
       </div>
       <div id="searchResults" class="grid"></div>
 
-      <div id="popularSection" class="hidden">
-        <div class="section-header">
-          <h3 class="section-label">🔥 Popular now</h3>
-          <button class="icon-btn" id="popularRefreshBtn" title="Show new options" aria-label="Show new options">🔄</button>
-        </div>
-        <div id="popular" class="grid"></div>
-      </div>
-
       <div id="recommendedSection">
         <div class="section-header">
           <h3 class="section-label" id="recommendedLabel">Recommended for you</h3>
@@ -283,7 +275,7 @@
   </div> <!-- #appScreen -->
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=11"></script>
 
   <!-- The mobile-layout diagnostic overlay that used to live here has been
        removed now that it's done its job (found the safe-area/dvh issues).
