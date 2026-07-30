@@ -697,7 +697,7 @@ async function libraryTaste(user_id) {
   const years = rows.map(r => r.published_year).filter(Boolean);
   const avgYear = years.length ? Math.round(years.reduce((a, b) => a + b, 0) / years.length) : null;
 
-  return { topGenres, avgYear };
+  return { topGenres, avgYear, hasReadBooks: rows.length > 0 };
 }
 
 // OpenLibrary's /subjects/{x}.json?published_in=Y-Z looked like the right
@@ -788,13 +788,19 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
 }
 
 app.get('/api/recommendations', async (req, res) => {
-  // Driven by libraryTaste() — every owned book, any status — instead of
-  // computeStats().top_generos (which only counts finished books, and used
-  // to leave recommendations generic/stuck on OpenLibrary's default old-
-  // classics ordering for anyone who hadn't marked much as "read" yet).
-  const { topGenres, avgYear } = await libraryTaste(req.userId);
-  const topGenre = topGenres[0];
-  if (!topGenre) return res.json({ subject: null, books: [] });
+  // Driven by libraryTaste() — status='leido' books only, per explicit
+  // request — for genre AND year.
+  const { topGenres, avgYear, hasReadBooks } = await libraryTaste(req.userId);
+  let topGenre = topGenres[0];
+
+  // A user can have finished books logged with no genre to show for it —
+  // if `categories` was never filled in for those books (e.g. added before
+  // enrichment worked, or added manually without it), topGenres comes back
+  // empty even though there's perfectly good year data to work with. That's
+  // a different situation from "no reading history at all" and shouldn't
+  // produce the same "go mark some books as read" dead end.
+  if (!topGenre && hasReadBooks) topGenre = 'fiction';
+  if (!topGenre) return res.json({ subject: null, books: [], hasReadBooks });
 
   const ownedRows = await db.all(`
     SELECT LOWER(b.title) as t FROM user_books ub JOIN books b ON b.id = ub.book_id WHERE ub.user_id = ?
@@ -846,17 +852,40 @@ app.get('/api/browse', async (req, res) => {
 // tagged this way, while classic reissues almost always are.
 const CLASSIC_CATEGORY_HINTS = ['classic', 'literary criticism', 'literary collections'];
 
+// Cross-checks a batch of ISBNs against OpenLibrary's search index to get
+// each book's real, WORK-level first_publish_year — this is the only
+// reliable fix for the "Don Quixote shows up as a 2021 release" problem.
+// Google Books' own published_year is per-EDITION (a reissue's cover date),
+// and neither category tags nor ratings data reliably distinguish a classic
+// reissue from an actual new release, so this is worth the extra request.
+async function lookupOriginalYears(isbns) {
+  if (!isbns.length) return {};
+  const q = isbns.map(i => `isbn:${i}`).join(' OR ');
+  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&fields=isbn,first_publish_year&limit=${isbns.length}`;
+  try {
+    const r = await fetchWithTimeout(url, 6000);
+    if (!r.ok) return {};
+    const data = await r.json();
+    const byIsbn = {};
+    for (const doc of data.docs || []) {
+      for (const isbn of doc.isbn || []) {
+        if (isbns.includes(isbn)) byIsbn[isbn] = doc.first_publish_year || null;
+      }
+    }
+    return byIsbn;
+  } catch {
+    return {};
+  }
+}
+
 app.get('/api/popular', async (req, res) => {
   const { category } = req.query;
   const q = category ? `subject:${category}` : 'subject:fiction';
-  // orderBy=relevance (Google's default ranking, which leans toward
-  // well-known/discussed books) gives a pool that's actually likely to have
-  // real ratings, unlike orderBy=newest, which mostly surfaces obscure
-  // brand-new listings (barely anyone has rated those yet either). One
-  // page of 40 (not two — a second parallel request doubled our Google
-  // Books call volume, which without an API key configured risks hitting
-  // their anonymous rate limit and silently coming back empty).
-  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&orderBy=relevance&maxResults=40`);
+  // Random startIndex each call (instead of always 0) so hitting "refresh"
+  // actually pulls a different slice of Google's results, not just the same
+  // ~40 candidates reshuffled into a different order every time.
+  const startIndex = Math.floor(Math.random() * 3) * 20;
+  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&orderBy=relevance&maxResults=40&startIndex=${startIndex}`);
   try {
     const r = await fetchWithTimeout(url, 6000);
     const data = await r.json();
@@ -864,8 +893,7 @@ app.get('/api/popular', async (req, res) => {
       console.error('Google Books (popular) returned an error:', r.status, JSON.stringify(data.error || data));
       return res.json({ books: [] });
     }
-    const currentYear = new Date().getFullYear();
-    const items = (data.items || [])
+    let items = (data.items || [])
       .map(item => {
         const info = item.volumeInfo || {};
         const year = info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null;
@@ -886,19 +914,24 @@ app.get('/api/popular', async (req, res) => {
           averageRating: info.averageRating || 0
         };
       })
-      // Google's publishedDate is per-EDITION, not per-work — a random 2021
-      // reprint of Don Quixote passes a plain year check just fine, which is
-      // why this also excludes anything tagged as a classic/literary-
-      // criticism reissue — that part never gets relaxed, at any tier below.
+      // Never relaxed: a classic/literary-criticism tag rules a book out
+      // regardless of anything else.
       .filter(b => !CLASSIC_CATEGORY_HINTS.some(hint => (b.categories || '').toLowerCase().includes(hint)));
 
+    // Cross-check against OpenLibrary for the real original-publication
+    // year — only for books that at least LOOK recent by Google's (edition)
+    // date, to keep this to a reasonable number of lookups.
+    const isbnsToCheck = items.filter(b => b.isbn && (!b.published_year || b.published_year >= new Date().getFullYear() - 15)).map(b => b.isbn);
+    const originalYears = await lookupOriginalYears([...new Set(isbnsToCheck)]);
+    items = items.map(b => (b.isbn && originalYears[b.isbn] ? { ...b, published_year: originalYears[b.isbn] } : b));
+
+    const currentYear = new Date().getFullYear();
     // Google Books' review data is sparse — plenty of legitimately popular,
     // recent books have zero ratingsCount on their listing, so requiring
     // ratings unconditionally could (and did) wipe out the whole list.
     // Try strict first (recent + some rating signal), and only relax one
     // dimension at a time if that leaves too few — recency never gets
-    // dropped entirely (that's the whole point of "now"), and the classic
-    // exclusion above never gets relaxed at all.
+    // dropped entirely (that's the whole point of "now").
     const hasRatingSignal = b => b.ratingsCount >= 1 || b.averageRating > 0;
     let filtered = items.filter(b => (!b.published_year || b.published_year >= currentYear - 6) && hasRatingSignal(b));
     if (filtered.length < 6) filtered = items.filter(b => !b.published_year || b.published_year >= currentYear - 10);
@@ -907,10 +940,9 @@ app.get('/api/popular', async (req, res) => {
     filtered.sort((a, b) => (b.ratingsCount - a.ratingsCount) || (b.averageRating - a.averageRating) || (b.published_year || 0) - (a.published_year || 0));
 
     // Google's own ranking is deterministic, so without this, hitting
-    // "refresh" on Popular Now would show the exact same 12 books every
-    // time — shuffling within the top slice of the (already quality-
-    // filtered, ranked) pool means refreshing surfaces a genuinely
-    // different set while still staying within "actually popular".
+    // "refresh" would show the exact same books just reordered — shuffling
+    // within the top slice of the (already quality-filtered, ranked) pool
+    // means refreshing surfaces a genuinely different set.
     const popular = shuffleArray(filtered.slice(0, 24));
 
     res.json({ books: popular.slice(0, 12).map(({ ratingsCount, averageRating, ...b }) => b) });

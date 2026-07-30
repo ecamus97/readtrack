@@ -632,7 +632,9 @@ async function loadRecommended() {
     const data = await api(`/api/recommendations`);
     if (!data.subject || !data.books.length) {
       document.getElementById('recommendedLabel').textContent = 'Recommended for you';
-      container.innerHTML = '<p class="empty-state">Mark a few books as "Read" to get personalized recommendations.</p>';
+      container.innerHTML = data.hasReadBooks
+        ? '<p class="empty-state">Couldn\'t find matching recommendations right now — try refreshing.</p>'
+        : '<p class="empty-state">Mark a few books as "Read" to get personalized recommendations.</p>';
       return;
     }
     document.getElementById('recommendedLabel').textContent = `Recommended for you — based on ${data.subject}`;
