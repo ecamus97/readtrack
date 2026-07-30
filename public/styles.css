@@ -666,13 +666,12 @@ select {
   nav {
     flex-shrink: 0;
     order: 2; /* see main's `order` comment above — this puts nav visually last */
-    /* Only the safe-area itself (the iOS home-indicator gesture zone, ~34px
-       on notched iPhones) gets reserved as blank space — no extra padding
-       stacked on top of it. That reserved strip is required by iOS and
-       can't be removed, but keeping it to the bare minimum (instead of
-       6px + safe-area) means less of it reads as "wasted" space below the
-       icons. */
-    padding: 8px 6px env(safe-area-inset-bottom, 8px);
+    /* Not reserving env(safe-area-inset-bottom) at all here, on purpose —
+       our other reference app doesn't reserve it either (its tab labels
+       sit right up against the true bottom edge) and looks right on the
+       same device, so we're matching that instead of the "textbook" iOS
+       safe-area treatment. */
+    padding: 8px 6px 10px;
     border-bottom: none;
     border-top: 1px solid var(--border);
     box-shadow: 0 -4px 16px rgba(38, 34, 32, 0.06);
@@ -683,14 +682,10 @@ select {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-end; /* sit the icon+label near the bottom of the
-      bar instead of centered in it, so they read as anchored to the safe
-      area rather than floating with a visible gap underneath them. */
     gap: 2px;
     padding: 6px 2px;
     border-radius: 12px;
     font-size: 0.68rem;
-    min-height: 48px;
   }
   .nav-icon { margin-right: 0; font-size: 1.2rem; }
 
