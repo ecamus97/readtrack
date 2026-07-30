@@ -704,43 +704,31 @@ async function libraryTaste(user_id) {
 // tool for year filtering, but it turned out to filter by EDITION publish
 // date, not the work's original one — a reissue/reprint of a centuries-old
 // classic can easily have a 2020s edition, so "published_in=2020-2029" was
-// happily returning things like Don Quixote. The actual original-publication
-// year lives in `first_publish_year`, which every work in the /subjects/
-// response already includes, so it can be filtered client-side without
-// needing the separate search.json endpoint at all.
+// happily returning things like Don Quixote. The real fix is search.json's
+// `first_publish_year:[X TO Y]` Solr range query, which reflects the WORK's
+// actual original year and searches OpenLibrary's whole corpus.
 //
-// search.json's `subject:"X"` field search was tried as the SOLE candidate
-// source for year-filtered requests, but that field is a much looser match
-// than the curated /subjects/ index and produced unreliable result-to-input
-// mapping — dropped as the primary source. But /subjects/ has the opposite
-// problem for compound/uncommon genre strings (e.g. "Juvenile Fiction /
-// Fantasy" from Google Books' categories) — its slug lookup requires a
-// near-exact canonical subject name, and a slug that doesn't exist just
-// comes back with zero works. So /subjects/ is tried first (better curation,
-// used alone whenever it already returns enough), and search.json is only
-// used to ADD more candidates to the pool when /subjects/ came back thin —
-// never as a replacement, and never followed by a "drop the year filter"
-// escape hatch.
-async function fetchSubjectSearchJson(subjectName, limit) {
-  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(`subject:"${subjectName}"`)}&limit=${limit}&fields=key,title,author_name,cover_i,first_publish_year`;
-  try {
-    const r = await fetchWithTimeout(url, 8000);
-    if (!r.ok) return [];
-    const data = await r.json();
-    return (data.docs || []).map(d => ({
-      key: d.key,
-      title: d.title,
-      authors: (d.author_name || []).map(name => ({ name })),
-      cover_id: d.cover_i,
-      first_publish_year: d.first_publish_year
-    }));
-  } catch {
-    return [];
-  }
-}
-
+// A later attempt switched year-scoped requests over to the curated
+// /subjects/ index instead (trying to fix recommendations collapsing to one
+// book), but that broke explicit year-filter browsing that had been working
+// well: /subjects/ only returns its top-N works ranked by popularity/edition
+// count, and for most genres essentially none of the truly recent (e.g.
+// "2020s") releases are popular/established enough yet to show up in that
+// top-N at all — "Fantasy" + "2020s" came back with zero results because of
+// this, not a bug in the filtering logic. search.json's range query has no
+// such recency bias, so it's back to being the source whenever a year
+// constraint (explicit or implicit) is in play; /subjects/ is only used for
+// the no-year-filter case, where "which are the most established/popular
+// works in this subject" is exactly the right question to ask.
 async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear, yearFrom, yearTo) {
   const targetLimit = limit || 8;
+
+  let from = yearFrom;
+  let to = yearTo;
+  if (!from && !to && preferredYear) {
+    from = preferredYear - 20;
+    to = Math.max(preferredYear + 20, new Date().getFullYear());
+  }
 
   // A network hiccup or timeout hitting OpenLibrary here used to bubble up
   // and blow up the whole request (browse showing "Could not reach Open
@@ -749,25 +737,28 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
   // rather than failing the entire browse/recommendation request.
   let works = [];
   try {
-    const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_'))}.json?limit=${targetLimit * 15}`, 8000);
-    if (r.ok) works = (await r.json()).works || [];
-  } catch (err) {
-    console.error('OpenLibrary /subjects/ lookup failed:', err.message);
-  }
-
-  // Thin result from the curated slug lookup (missing slug, or a genre the
-  // /subjects/ index just doesn't cover well) — widen the pool via
-  // search.json's looser subject-field match, merged in rather than
-  // replacing what /subjects/ already found.
-  if (works.length < targetLimit * 5) {
-    const extra = await fetchSubjectSearchJson(subjectName, targetLimit * 15);
-    const seen = new Set(works.map(w => w.key));
-    for (const w of extra) {
-      if (!seen.has(w.key)) { works.push(w); seen.add(w.key); }
+    if (from || to) {
+      const q = `subject:"${subjectName}" AND first_publish_year:[${from || 1000} TO ${to || new Date().getFullYear()}]`;
+      const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${targetLimit * 5}&fields=key,title,author_name,cover_i,first_publish_year`;
+      const r = await fetchWithTimeout(url, 8000);
+      if (r.ok) {
+        const data = await r.json();
+        works = (data.docs || []).map(d => ({
+          key: d.key,
+          title: d.title,
+          authors: (d.author_name || []).map(name => ({ name })),
+          cover_id: d.cover_i,
+          first_publish_year: d.first_publish_year
+        }));
+      }
+    } else {
+      const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
+      const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`, 8000);
+      if (r.ok) works = (await r.json()).works || [];
     }
+  } catch (err) {
+    console.error('OpenLibrary lookup failed:', err.message);
   }
-
-  let candidates = works.filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
 
   // A hard year filter, requested either explicitly (yearFrom/yearTo, from
   // the browse filters) or implicitly (preferredYear, from the user's actual
@@ -775,17 +766,7 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
   // everything" when too few close matches exist — that's exactly how 1800s
   // books kept slipping into recommendations for a user who reads nothing
   // older than 2006. A smaller, correctly-scoped result beats a wrong one.
-  let from = yearFrom;
-  let to = yearTo;
-  if (!from && !to && preferredYear) {
-    from = preferredYear - 20;
-    to = Math.max(preferredYear + 20, new Date().getFullYear());
-  }
-  if (from || to) {
-    const lo = from || 1000;
-    const hi = to || new Date().getFullYear();
-    candidates = candidates.filter(w => w.first_publish_year && w.first_publish_year >= lo && w.first_publish_year <= hi);
-  }
+  let candidates = works.filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
 
   let selected;
   if (preferredYear) {
