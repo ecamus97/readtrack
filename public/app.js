@@ -1632,6 +1632,7 @@ async function loadClubDetail() {
   const booksByStatus = { current: [], upcoming: [], done: [] };
   for (const b of club.books) booksByStatus[b.status].push(b);
   const currentClubBook = booksByStatus.current[0] || null;
+  window.__clubBooksCache = club.books;
 
   container.innerHTML = `
     <div class="club-actions-row">
@@ -1659,11 +1660,7 @@ async function loadClubDetail() {
       <div class="club-books-list">
         ${booksByStatus[status].map(b => `
           <div class="club-book-row">
-            <div class="cover-wrap club-book-cover">${bookCoverHtml(b.cover_url)}</div>
-            <div class="club-book-body">
-              <p class="club-book-title">${escapeHtml(b.title)}</p>
-              <p class="club-book-meta">${escapeHtml(b.authors) || 'Unknown author'}${b.pages ? ' · ' + b.pages + ' pages' : ''}</p>
-            </div>
+            <div class="cover-wrap club-book-cover clickable" onclick="showClubBookDetail(${b.club_book_id})" title="${escapeHtml(b.title)}">${bookCoverHtml(b.cover_url)}</div>
             ${isOwner ? `
               <div class="club-book-actions">
                 ${status !== 'current' ? `<button class="secondary small" onclick="setClubBookStatus(${b.club_book_id}, 'current')">Set current</button>` : ''}
@@ -1786,6 +1783,31 @@ function removeClubMember(memberUserId) {
 function openAddBookForClub() {
   window.__clubModeClubId = window.__currentClubId;
   showView('search');
+}
+
+// The reading-list rows show only the cover (matching the cover-only card
+// style used everywhere else); tapping it opens the same title/author/pages
+// detail as a plain read-only view, since it's already in the club.
+function showClubBookDetail(clubBookId) {
+  const b = (window.__clubBooksCache || []).find(x => x.club_book_id === clubBookId);
+  if (!b) return;
+  openModal(`
+    <div class="detail-header">
+      <div class="cover-wrap detail-cover">${bookCoverHtml(b.cover_url)}</div>
+      <div>
+        <h3>${escapeHtml(b.title)}</h3>
+        <p>${escapeHtml(b.authors) || 'Unknown author'}</p>
+      </div>
+    </div>
+    <ul class="detail-list">
+      <li><span>Publication year</span><strong>${b.published_year || '—'}</strong></li>
+      <li><span>Pages</span><strong>${b.pages || '—'}</strong></li>
+      <li><span>Categories</span><strong>${escapeHtml(b.categories) || '—'}</strong></li>
+    </ul>
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal()">Close</button>
+    </div>
+  `);
 }
 
 async function setClubBookStatus(clubBookId, status) {
