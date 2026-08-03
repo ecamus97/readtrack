@@ -508,6 +508,47 @@ function cacheForSource(source) {
   return window.__searchCache;
 }
 
+// Books already stored in our DB (Library/Home/Club) carry a description
+// once enriched; a book straight from a search/browse API result usually
+// doesn't yet. Rather than fetching a description up front for every card in
+// a grid (slow, and mostly wasted work), it's fetched lazily only once the
+// user actually opens that book's detail, and only if it's missing —
+// shared by every "book detail" modal (search preview, library, reading-now,
+// club).
+function descriptionBlockHtml(b) {
+  if (b.description) return `<p class="detail-description">${escapeHtml(b.description)}</p>`;
+  return `<p class="detail-description muted" id="detailDescription">Loading description…</p>`;
+}
+
+function descKeyFor(b) {
+  return String(b.api_id || b.book_id || b.id || b.title);
+}
+
+async function loadDescriptionIfMissing(b) {
+  if (b.description) return;
+  const key = descKeyFor(b);
+  modalBox.dataset.descKey = key;
+  let enriched;
+  try {
+    enriched = await api('/api/enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(b)
+    });
+  } catch {
+    enriched = null;
+  }
+  if (modalBox.dataset.descKey !== key) return; // the modal moved on to something else meanwhile
+  const el = document.getElementById('detailDescription');
+  if (!el) return;
+  if (enriched && enriched.description) {
+    b.description = enriched.description;
+    el.outerHTML = `<p class="detail-description">${escapeHtml(enriched.description)}</p>`;
+  } else {
+    el.textContent = 'No description available.';
+  }
+}
+
 function showBookPreview(index, source) {
   const arr = cacheForSource(source);
   const b = arr[index];
@@ -526,13 +567,15 @@ function showBookPreview(index, source) {
       <li><span>Pages</span><strong>${b.pages || '—'}</strong></li>
       <li><span>Categories</span><strong>${escapeHtml(b.categories) || '—'}</strong></li>
     </ul>
+    ${descriptionBlockHtml(b)}
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">Close</button>
       ${clubMode
-        ? `<button class="primary" onclick="closeModal(); addBookToClub(${index})">+ Add to club</button>`
+        ? `<button class="primary" onclick="closeModal(); addBookToClub(${index}, '${source}')">+ Add to club</button>`
         : `<button class="primary" onclick="closeModal(); openAddModal(${index}, '${source}')">+ Add to my library</button>`}
     </div>
   `);
+  loadDescriptionIfMissing(b);
 }
 
 function updateClubModeBanner() {
@@ -553,10 +596,17 @@ function cancelClubMode() {
   if (clubId) openClubDetail(clubId); else showView('search');
 }
 
-async function addBookToClub(index) {
-  const book = window.__searchCache[index];
+async function addBookToClub(index, source) {
+  // Was always reading from __searchCache regardless of where the book was
+  // actually picked from (e.g. the Recommended grid uses __recommendedCache)
+  // — picking a club book from anywhere but the plain search/browse results
+  // grid silently grabbed the wrong book (or undefined), which is why it
+  // "didn't appear" when adding. Now uses the same cache the user clicked
+  // into, same as the regular (non-club) add flow.
+  const book = cacheForSource(source)[index];
   const clubId = window.__clubModeClubId;
   if (!clubId) return;
+  if (!book) { showToast('Could not find that book — try selecting it again.'); return; }
   try {
     await api(`/api/clubs/${clubId}/books`, {
       method: 'POST',
@@ -837,6 +887,7 @@ function renderBookDetail(b, refreshing) {
       <li><span>Start date</span><strong>${b.start_date || '—'}</strong></li>
       <li><span>Finish date</span><strong>${b.end_date || '—'}</strong></li>
     </ul>
+    ${descriptionBlockHtml(b)}
     ${missingData ? `<button class="secondary" style="width:100%;margin-bottom:10px" ${refreshing ? 'disabled' : ''} onclick="refreshBookData(${b.book_id})">${refreshing ? 'Searching...' : '🔄 Look up missing pages/categories'}</button>` : ''}
     <div class="modal-actions">
       <button class="danger" onclick="closeModal(); confirmDeleteBook(${b.id})">Delete</button>
@@ -844,6 +895,7 @@ function renderBookDetail(b, refreshing) {
       <button class="primary" onclick="closeModal(); openStatusModal(${b.id}, '${b.status}', ${b.rating || 'null'})">Change status</button>
     </div>
   `);
+  loadDescriptionIfMissing(b);
 }
 
 function confirmDeleteBook(id) {
@@ -1312,11 +1364,13 @@ function openReadingNowDetail(id) {
       <li><span>Start date</span><strong>${b.start_date || '—'}</strong></li>
       <li><span>Progress</span><strong>${b.progress_percent || 0}%</strong></li>
     </ul>
+    ${descriptionBlockHtml(b)}
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">Close</button>
       <button class="primary" onclick="closeModal(); openProgressModal(${b.id}, ${b.progress_percent || 0})">Update progress</button>
     </div>
   `);
+  loadDescriptionIfMissing(b);
 }
 
 function openProgressModal(userBookId, current) {
@@ -1804,10 +1858,12 @@ function showClubBookDetail(clubBookId) {
       <li><span>Pages</span><strong>${b.pages || '—'}</strong></li>
       <li><span>Categories</span><strong>${escapeHtml(b.categories) || '—'}</strong></li>
     </ul>
+    ${descriptionBlockHtml(b)}
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">Close</button>
     </div>
   `);
+  loadDescriptionIfMissing(b);
 }
 
 async function setClubBookStatus(clubBookId, status) {

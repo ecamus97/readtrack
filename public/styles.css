@@ -598,6 +598,9 @@ select {
 .detail-list li:last-child { border-bottom: none; }
 .detail-list li span { color: var(--muted); }
 
+.detail-description { font-size: 0.88rem; line-height: 1.5; margin: 14px 0; color: var(--ink); }
+.detail-description.muted { color: var(--muted); font-style: italic; }
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed;

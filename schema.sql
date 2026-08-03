@@ -35,8 +35,12 @@ create table if not exists books (
   published_year integer,
   categories text,
   language text,
+  description text,
   created_at timestamptz not null default now()
 );
+
+-- Safe to re-run against an already-created table.
+alter table books add column if not exists description text;
 
 create table if not exists user_books (
   id bigserial primary key,

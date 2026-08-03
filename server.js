@@ -108,77 +108,116 @@ function withGoogleKey(url) {
   return GOOGLE_BOOKS_API_KEY ? `${url}&key=${GOOGLE_BOOKS_API_KEY}` : url;
 }
 
-async function searchGoogleBooks(q) {
-  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10`);
-  const r = await fetch(url);
-  const data = await r.json();
-  if (!r.ok || data.error) {
-    console.error('Google Books returned an error:', r.status, JSON.stringify(data.error || data));
+function mapGoogleBooksItem(item) {
+  const info = item.volumeInfo || {};
+  const isbn = (info.industryIdentifiers || []).find(i => i.type === 'ISBN_13')?.identifier
+    || (info.industryIdentifiers || [])[0]?.identifier || null;
+  return {
+    api_id: item.id,
+    isbn,
+    title: info.title || 'Untitled',
+    authors: (info.authors || []).join(', '),
+    cover_url: info.imageLinks?.thumbnail || (isbn ? `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg` : null),
+    pages: info.pageCount || null,
+    published_year: info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null,
+    categories: (info.categories || []).join(', '),
+    language: info.language || null,
+    description: info.description || null
+  };
+}
+
+// Plain `q=<text>` full-text search against Google Books' whole corpus
+// (which also matches inside descriptions/blurbs, not just title/author) is
+// why some searches surfaced books with nothing obviously to do with what
+// was typed. No timeout on the fetch call also meant a slow/hung request
+// could make a search silently take forever rather than fail fast into the
+// OpenLibrary fallback below.
+async function fetchGoogleBooksQuery(q) {
+  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=12`);
+  try {
+    const r = await fetchWithTimeout(url, 8000);
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      console.error('Google Books returned an error:', r.status, JSON.stringify(data.error || data));
+      return null;
+    }
+    return (data.items || []).map(mapGoogleBooksItem);
+  } catch (err) {
+    console.error('Google Books call failed:', err.message);
     return null;
   }
-  return (data.items || []).map(item => {
-    const info = item.volumeInfo || {};
-    const isbn = (info.industryIdentifiers || []).find(i => i.type === 'ISBN_13')?.identifier
-      || (info.industryIdentifiers || [])[0]?.identifier || null;
-    return {
-      api_id: item.id,
-      isbn,
-      title: info.title || 'Untitled',
-      authors: (info.authors || []).join(', '),
-      cover_url: info.imageLinks?.thumbnail || (isbn ? `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg` : null),
-      pages: info.pageCount || null,
-      published_year: info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null,
-      categories: (info.categories || []).join(', '),
-      language: info.language || null
-    };
-  });
+}
+
+async function searchGoogleBooks(q) {
+  // Search title and author as separate, field-scoped queries (Google's
+  // intitle:/inauthor: qualifiers) so results are actually about what the
+  // user typed, instead of one loose full-text query that can match
+  // anywhere in the record. Title matches are listed first (more specific
+  // signal), then author matches not already included.
+  const [titleHits, authorHits] = await Promise.all([
+    fetchGoogleBooksQuery(`intitle:${q}`),
+    fetchGoogleBooksQuery(`inauthor:${q}`)
+  ]);
+  if (titleHits === null && authorHits === null) return null; // both requests actually failed — let the caller fall back to OpenLibrary
+
+  const seen = new Set();
+  const merged = [];
+  for (const b of [...(titleHits || []), ...(authorHits || [])]) {
+    if (seen.has(b.api_id)) continue;
+    seen.add(b.api_id);
+    merged.push(b);
+  }
+  if (merged.length) return merged;
+
+  // Neither a title- nor author-scoped match found anything — the query
+  // might be a series name, a subtitle fragment, or otherwise not a clean
+  // title/author match. A loosely-relevant plain search beats no results.
+  return await fetchGoogleBooksQuery(q);
 }
 
 async function searchOpenLibrary(q) {
-  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=10`;
-  const r = await fetch(url);
-  const data = await r.json();
-  if (!r.ok) {
-    console.error('Open Library returned an error:', r.status);
+  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=12&fields=key,title,author_name,cover_i,isbn,number_of_pages_median,first_publish_year,subject,language`;
+  try {
+    const r = await fetchWithTimeout(url, 8000);
+    if (!r.ok) {
+      console.error('Open Library returned an error:', r.status);
+      return null;
+    }
+    const data = await r.json();
+    return (data.docs || []).map(d => ({
+      api_id: `ol-${d.key}`,
+      isbn: d.isbn?.[0] || null,
+      title: d.title || 'Untitled',
+      authors: (d.author_name || []).join(', '),
+      cover_url: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : (d.isbn?.[0] ? `https://covers.openlibrary.org/b/isbn/${d.isbn[0]}-M.jpg` : null),
+      pages: d.number_of_pages_median || null,
+      published_year: d.first_publish_year || null,
+      categories: (d.subject || []).slice(0, 3).join(', '),
+      language: (d.language || [])[0] || null
+    }));
+  } catch (err) {
+    console.error('Open Library call failed:', err.message);
     return null;
   }
-  return (data.docs || []).map(d => ({
-    api_id: `ol-${d.key}`,
-    isbn: d.isbn?.[0] || null,
-    title: d.title || 'Untitled',
-    authors: (d.author_name || []).join(', '),
-    cover_url: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : (d.isbn?.[0] ? `https://covers.openlibrary.org/b/isbn/${d.isbn[0]}-M.jpg` : null),
-    pages: d.number_of_pages_median || null,
-    published_year: d.first_publish_year || null,
-    categories: (d.subject || []).slice(0, 3).join(', '),
-    language: (d.language || [])[0] || null
-  }));
 }
 
 app.get('/api/search', async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).json({ error: 'q is required' });
 
-  let results = null;
-  try {
-    results = await searchGoogleBooks(q);
-  } catch (err) {
-    console.error('Google Books call failed:', err.message);
-  }
+  let results = await searchGoogleBooks(q);
+  let fallback = null;
 
   if (!results || results.length === 0) {
-    try {
-      const fallback = await searchOpenLibrary(q);
-      if (fallback && fallback.length) results = fallback;
-    } catch (err) {
-      console.error('Open Library call failed:', err.message);
-    }
+    fallback = await searchOpenLibrary(q);
+    if (fallback && fallback.length) results = fallback;
   }
 
-  if (results === null) {
+  if (results === null && fallback === null) {
     return res.status(502).json({ error: 'Could not reach any book API. Check the server logs for details.' });
   }
-  res.json(results);
+
+  res.json(results || []);
 });
 
 async function fetchWithTimeout(url, ms) {
@@ -191,12 +230,12 @@ async function fetchWithTimeout(url, ms) {
   }
 }
 
-// Tries several sources in order to fill in missing pages/categories. Open
-// Library goes first (no quota); Google Books is a last-resort bonus since
-// its free quota without an API key runs out fast.
+// Tries several sources in order to fill in missing pages/categories/
+// description. Open Library goes first (no quota); Google Books is a
+// last-resort bonus since its free quota without an API key runs out fast.
 async function enrichBook(book) {
-  if (book.pages && book.categories) return book;
-  console.log(`[enrich] "${book.title}" — missing: ${!book.pages ? 'pages ' : ''}${!book.categories ? 'categories' : ''}`);
+  if (book.pages && book.categories && book.description) return book;
+  console.log(`[enrich] "${book.title}" — missing: ${!book.pages ? 'pages ' : ''}${!book.categories ? 'categories ' : ''}${!book.description ? 'description' : ''}`);
 
   let workKey = null;
 
@@ -266,7 +305,7 @@ async function enrichBook(book) {
     }
   }
 
-  if (!book.pages || !book.categories) {
+  if (!book.pages || !book.categories || !book.description) {
     try {
       const query = `${book.title} ${book.authors || ''}`.trim();
       const results = await searchGoogleBooks(query);
@@ -275,13 +314,30 @@ async function enrichBook(book) {
         if (!book.isbn && match.isbn) book.isbn = match.isbn;
         if (!book.pages && match.pages) book.pages = match.pages;
         if (!book.categories && match.categories) book.categories = match.categories;
+        if (!book.description && match.description) book.description = match.description;
       }
     } catch (err) {
       console.error('[enrich]   Google Books failed:', err.message);
     }
   }
 
-  console.log(`[enrich] final result "${book.title}": pages=${book.pages || 'no data'}, categories=${book.categories || 'no data'}`);
+  // Google Books' description covers most cases (it's checked first, above),
+  // but for older/public-domain titles OpenLibrary's work page sometimes has
+  // one when Google doesn't — worth one more try before giving up.
+  if (!book.description && workKey) {
+    try {
+      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, 4000);
+      if (r.ok) {
+        const data = await r.json();
+        const desc = typeof data.description === 'string' ? data.description : data.description?.value;
+        if (desc) book.description = desc;
+      }
+    } catch (err) {
+      console.error('[enrich]   Open Library (description) failed:', err.message);
+    }
+  }
+
+  console.log(`[enrich] final result "${book.title}": pages=${book.pages || 'no data'}, categories=${book.categories || 'no data'}, description=${book.description ? 'found' : 'no data'}`);
   return book;
 }
 
@@ -298,9 +354,9 @@ async function findOrCreateBook(b) {
   if (existing) return existing;
   return db.withTransaction(async (tx) => {
     const info = await tx.run(`
-      INSERT INTO books (api_id, isbn, title, authors, cover_url, pages, published_year, categories, language)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [b.api_id, b.isbn || null, b.title, b.authors || null, b.cover_url || null, b.pages || null, b.published_year || null, b.categories || null, b.language || null]);
+      INSERT INTO books (api_id, isbn, title, authors, cover_url, pages, published_year, categories, language, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [b.api_id, b.isbn || null, b.title, b.authors || null, b.cover_url || null, b.pages || null, b.published_year || null, b.categories || null, b.language || null, b.description || null]);
     return tx.get('SELECT * FROM books WHERE id = ?', [info.lastInsertRowid]);
   });
 }
@@ -318,8 +374,8 @@ app.post('/api/books/:id/refresh', async (req, res) => {
   const existing = await db.get('SELECT * FROM books WHERE id = ?', [req.params.id]);
   if (!existing) return res.status(404).json({ error: 'Book not found' });
   const enriched = await enrichBook({ ...existing });
-  await db.run('UPDATE books SET pages = ?, categories = ?, isbn = ? WHERE id = ?',
-    [enriched.pages || null, enriched.categories || null, enriched.isbn || existing.isbn || null, existing.id]);
+  await db.run('UPDATE books SET pages = ?, categories = ?, isbn = ?, description = ? WHERE id = ?',
+    [enriched.pages || null, enriched.categories || null, enriched.isbn || existing.isbn || null, enriched.description || existing.description || null, existing.id]);
   const updated = await db.get('SELECT * FROM books WHERE id = ?', [existing.id]);
   res.json(updated);
 });
@@ -350,7 +406,7 @@ app.get('/api/user-books', async (req, res) => {
   const rows = await db.all(`
     SELECT ub.id, ub.status, ub.rating, ub.notes, ub.start_date, ub.end_date,
            ub.planned_start_date, ub.planned_end_date, ub.progress_percent,
-           b.id as book_id, b.title, b.authors, b.cover_url, b.pages, b.published_year, b.categories, b.language
+           b.id as book_id, b.title, b.authors, b.cover_url, b.pages, b.published_year, b.categories, b.language, b.description
     FROM user_books ub JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id = ?
     ORDER BY ub.created_at DESC
@@ -627,7 +683,7 @@ app.get('/api/stats', async (req, res) => {
 app.get('/api/reading-now', async (req, res) => {
   const rows = await db.all(`
     SELECT ub.id, ub.start_date, ub.progress_percent, b.id as book_id, b.title, b.authors, b.cover_url, b.pages,
-           b.published_year, b.categories, ub.rating
+           b.published_year, b.categories, b.description, ub.rating
     FROM user_books ub JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id = ? AND ub.status = 'leyendo'
     ORDER BY ub.start_date DESC
@@ -738,8 +794,11 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
   let works = [];
   try {
     if (from || to) {
+      // Fetch a much bigger pool than what's actually returned — refreshing
+      // Recommended only shuffled within a top slice barely bigger than what
+      // it displayed, so hitting refresh kept surfacing near-identical sets.
       const q = `subject:"${subjectName}" AND first_publish_year:[${from || 1000} TO ${to || new Date().getFullYear()}]`;
-      const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${targetLimit * 5}&fields=key,title,author_name,cover_i,first_publish_year`;
+      const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${targetLimit * 12}&fields=key,title,author_name,cover_i,first_publish_year`;
       const r = await fetchWithTimeout(url, 8000);
       if (r.ok) {
         const data = await r.json();
@@ -770,8 +829,11 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
 
   let selected;
   if (preferredYear) {
+    // Widened from *2 to *5 — with a small slice, shuffling barely changed
+    // anything since almost the whole candidate set was already being shown,
+    // which is why hitting refresh kept returning near-identical results.
     candidates.sort((a, b) => Math.abs((a.first_publish_year || 0) - preferredYear) - Math.abs((b.first_publish_year || 0) - preferredYear));
-    selected = shuffleArray(candidates.slice(0, targetLimit * 2));
+    selected = shuffleArray(candidates.slice(0, targetLimit * 5));
   } else if (!yearFrom && !yearTo) {
     // No signal about the user's era preference at all, and no explicit year
     // filter requested — default to the most recently published books
