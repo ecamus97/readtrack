@@ -182,7 +182,7 @@ async function searchOpenLibrary(q) {
   // waiting the full OL_TIMEOUT for something that's likely to fail anyway.
   const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=12&fields=key,title,author_name,cover_i,isbn,number_of_pages_median,first_publish_year,subject,language`;
   try {
-    const r = await fetchWithTimeout(url, OL_TIMEOUT);
+    const r = await fetchWithTimeout(url, OL_TIMEOUT, 0, OL_HEADERS);
     if (!r.ok) {
       console.error('Open Library returned an error:', r.status);
       return null;
@@ -224,17 +224,28 @@ app.get('/api/search', async (req, res) => {
   res.json(results || []);
 });
 
+// OpenLibrary's own API docs (openlibrary.org/developers/api) spell out
+// exactly why unidentified requests get throttled hard: default rate limit
+// is 1 request/second, and every request we'd ever sent went out with
+// Node's generic default User-Agent — completely unidentified. Requests that
+// send a `User-Agent` with the app name and a contact email get a 3x limit
+// AND are treated as "identified" rather than lumped in with anonymous
+// scraper-style traffic, which likely explains why Render's shared IP was
+// getting throttled into oblivion (many different apps on that IP, all
+// unidentified, blowing well past 1 req/sec combined).
+const OL_HEADERS = { 'User-Agent': 'ReadTrack (contact: ecamus@apprecio.com)' };
+
 // Retries default to 0 now — with the longer OL_TIMEOUT below, a retry on
 // top would let a single slow OpenLibrary call cost 40+ seconds (timeout,
 // then a full second timeout again), which is worse for the user than one
 // patient attempt. Callers that specifically want a retry (e.g. a quick,
 // small lookup) can still pass a higher `retries` explicitly.
-async function fetchWithTimeout(url, ms, retries = 0) {
+async function fetchWithTimeout(url, ms, retries = 0, headers) {
   for (let attempt = 0; ; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     try {
-      return await fetch(url, { signal: controller.signal });
+      return await fetch(url, { signal: controller.signal, headers });
     } catch (err) {
       if (attempt >= retries) throw err;
       await new Promise(r => setTimeout(r, 300));
@@ -270,7 +281,7 @@ async function enrichBook(book) {
     try {
       const params = new URLSearchParams({ title: book.title, limit: '1' });
       if (book.authors) params.set('author', book.authors.split(',')[0].trim());
-      const r = await fetchWithTimeout(`https://openlibrary.org/search.json?${params.toString()}`, OL_TIMEOUT);
+      const r = await fetchWithTimeout(`https://openlibrary.org/search.json?${params.toString()}`, OL_TIMEOUT, 0, OL_HEADERS);
       if (r.ok) {
         const data = await r.json();
         const doc = data.docs?.[0];
@@ -288,7 +299,7 @@ async function enrichBook(book) {
 
   if (book.isbn && (!book.pages || !book.categories)) {
     try {
-      const r = await fetchWithTimeout(`https://openlibrary.org/isbn/${book.isbn}.json`, OL_TIMEOUT);
+      const r = await fetchWithTimeout(`https://openlibrary.org/isbn/${book.isbn}.json`, OL_TIMEOUT, 0, OL_HEADERS);
       if (r.ok) {
         const data = await r.json();
         if (!book.pages && data.number_of_pages) book.pages = data.number_of_pages;
@@ -304,7 +315,7 @@ async function enrichBook(book) {
 
   if (!book.categories && workKey) {
     try {
-      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, OL_TIMEOUT);
+      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, OL_TIMEOUT, 0, OL_HEADERS);
       if (r.ok) {
         const data = await r.json();
         if (Array.isArray(data.subjects) && data.subjects.length) {
@@ -318,7 +329,7 @@ async function enrichBook(book) {
 
   if (!book.pages && workKey) {
     try {
-      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}/editions.json?limit=20`, OL_TIMEOUT);
+      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}/editions.json?limit=20`, OL_TIMEOUT, 0, OL_HEADERS);
       if (r.ok) {
         const data = await r.json();
         const withPages = (data.entries || []).find(e => e.number_of_pages);
@@ -353,7 +364,7 @@ async function enrichBook(book) {
   // one when Google doesn't — worth one more try before giving up.
   if (!book.description && workKey) {
     try {
-      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, OL_TIMEOUT);
+      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, OL_TIMEOUT, 0, OL_HEADERS);
       if (r.ok) {
         const data = await r.json();
         const desc = typeof data.description === 'string' ? data.description : data.description?.value;
@@ -828,7 +839,7 @@ async function fetchSubjectBooksFromOpenLibrary(subjectName, from, to, limit) {
     if (from || to) {
       const q = `subject:"${subjectName}" AND first_publish_year:[${from || 1000} TO ${to || new Date().getFullYear()}]`;
       const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${limit}&fields=key,title,author_name,cover_i,first_publish_year`;
-      const r = await fetchWithTimeout(url, OL_TIMEOUT);
+      const r = await fetchWithTimeout(url, OL_TIMEOUT, 0, OL_HEADERS);
       if (!r.ok) return [];
       const data = await r.json();
       return (data.docs || []).map(d => ({
@@ -840,7 +851,7 @@ async function fetchSubjectBooksFromOpenLibrary(subjectName, from, to, limit) {
       }));
     }
     const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
-    const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${limit}`, OL_TIMEOUT);
+    const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${limit}`, OL_TIMEOUT, 0, OL_HEADERS);
     if (!r.ok) return [];
     const data = await r.json();
     return (data.works || []).map(w => ({
@@ -1031,7 +1042,7 @@ async function lookupOriginalYears(titles) {
   const results = await Promise.all(normalized.map(async (title) => {
     const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(title)}&fields=title,first_publish_year&limit=1`;
     try {
-      const r = await fetchWithTimeout(url, OL_TIMEOUT);
+      const r = await fetchWithTimeout(url, OL_TIMEOUT, 0, OL_HEADERS);
       if (!r.ok) return [title, null];
       const data = await r.json();
       return [title, data.docs?.[0]?.first_publish_year || null];
