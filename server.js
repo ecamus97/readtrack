@@ -220,13 +220,23 @@ app.get('/api/search', async (req, res) => {
   res.json(results || []);
 });
 
-async function fetchWithTimeout(url, ms) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
+// One retry by default — OpenLibrary and Google Books are free public APIs
+// that occasionally hiccup on a single request; retrying once cuts down a
+// lot on "no results"/timeouts caused by nothing more than one slow request,
+// at the cost of a bit more latency on the rarer case where it's actually
+// needed.
+async function fetchWithTimeout(url, ms, retries = 1) {
+  for (let attempt = 0; ; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      return await fetch(url, { signal: controller.signal });
+    } catch (err) {
+      if (attempt >= retries) throw err;
+      await new Promise(r => setTimeout(r, 300));
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -810,6 +820,31 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
           first_publish_year: d.first_publish_year
         }));
       }
+
+      // search.json's `subject:"X"` field match has patchy recall for some
+      // genres/phrasings (part of why recommendations occasionally came back
+      // thin) — if it didn't find much, also pull from the curated /subjects/
+      // index as a supplementary source and merge it in. This only ADDS
+      // candidates; the exact year-range filter below still applies to
+      // everything the same way regardless of where it came from, so this
+      // can't reintroduce out-of-range results the way relying on /subjects/
+      // as the PRIMARY source did (its top-N-by-popularity ordering is what
+      // caused the "Fantasy + 2020s" zero-results bug).
+      if (works.length < targetLimit * 3) {
+        try {
+          const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
+          const r2 = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 15}`, 8000);
+          if (r2.ok) {
+            const extra = (await r2.json()).works || [];
+            const seen = new Set(works.map(w => w.key));
+            for (const w of extra) {
+              if (!seen.has(w.key)) { works.push(w); seen.add(w.key); }
+            }
+          }
+        } catch (err) {
+          console.error('OpenLibrary /subjects/ widen failed:', err.message);
+        }
+      }
     } else {
       const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
       const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`, 8000);
@@ -903,9 +938,16 @@ app.get('/api/browse', async (req, res) => {
   if (!category && !yearFrom && !yearTo) return res.status(400).json({ error: 'category or a year range is required' });
   const subject = category || 'fiction';
   try {
-    const preferredYear = (yearFrom || yearTo) ? null : await averageReadYear(req.userId);
+    // Picking just a category with no year chip used to silently pull in
+    // the user's average-reading-year as an implicit filter, routing the
+    // request through search.json's subject-field query (worse recall than
+    // /subjects/, especially for a broad term like "Fiction") — that's why
+    // plain category browsing sometimes failed with "no results" even
+    // though nothing about the request looked year-scoped. No implicit year
+    // filter is applied here anymore: no year chip picked means no year
+    // constraint, full stop, using the more reliable /subjects/ index.
     const books = await fetchSubjectBooks(
-      subject, null, 20, preferredYear,
+      subject, null, 20, null,
       yearFrom ? parseInt(yearFrom) : null,
       yearTo ? parseInt(yearTo) : null
     );
