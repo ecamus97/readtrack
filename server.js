@@ -135,7 +135,7 @@ function mapGoogleBooksItem(item) {
 async function fetchGoogleBooksQuery(q) {
   const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=12`);
   try {
-    const r = await fetchWithTimeout(url, 8000);
+    const r = await fetchWithTimeout(url, OL_TIMEOUT);
     const data = await r.json();
     if (!r.ok || data.error) {
       console.error('Google Books returned an error:', r.status, JSON.stringify(data.error || data));
@@ -178,7 +178,7 @@ async function searchGoogleBooks(q) {
 async function searchOpenLibrary(q) {
   const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=12&fields=key,title,author_name,cover_i,isbn,number_of_pages_median,first_publish_year,subject,language`;
   try {
-    const r = await fetchWithTimeout(url, 8000);
+    const r = await fetchWithTimeout(url, OL_TIMEOUT);
     if (!r.ok) {
       console.error('Open Library returned an error:', r.status);
       return null;
@@ -220,12 +220,12 @@ app.get('/api/search', async (req, res) => {
   res.json(results || []);
 });
 
-// One retry by default — OpenLibrary and Google Books are free public APIs
-// that occasionally hiccup on a single request; retrying once cuts down a
-// lot on "no results"/timeouts caused by nothing more than one slow request,
-// at the cost of a bit more latency on the rarer case where it's actually
-// needed.
-async function fetchWithTimeout(url, ms, retries = 1) {
+// Retries default to 0 now — with the longer OL_TIMEOUT below, a retry on
+// top would let a single slow OpenLibrary call cost 40+ seconds (timeout,
+// then a full second timeout again), which is worse for the user than one
+// patient attempt. Callers that specifically want a retry (e.g. a quick,
+// small lookup) can still pass a higher `retries` explicitly.
+async function fetchWithTimeout(url, ms, retries = 0) {
   for (let attempt = 0; ; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
@@ -240,6 +240,16 @@ async function fetchWithTimeout(url, ms, retries = 1) {
   }
 }
 
+// Render's logs showed OpenLibrary calls consistently timing out ("This
+// operation was aborted") at the old 8s timeout across many separate
+// requests over several minutes — not a one-off blip. Fetching the same
+// OpenLibrary endpoints directly (outside Render) worked fine and quickly,
+// so this looks like OpenLibrary responding noticeably slower to Render's
+// network specifically, rather than being down outright. A longer timeout
+// gives those slow-but-real responses a chance to actually come back
+// instead of aborting into an empty result every time.
+const OL_TIMEOUT = 20000;
+
 // Tries several sources in order to fill in missing pages/categories/
 // description. Open Library goes first (no quota); Google Books is a
 // last-resort bonus since its free quota without an API key runs out fast.
@@ -253,7 +263,7 @@ async function enrichBook(book) {
     try {
       const params = new URLSearchParams({ title: book.title, limit: '1' });
       if (book.authors) params.set('author', book.authors.split(',')[0].trim());
-      const r = await fetchWithTimeout(`https://openlibrary.org/search.json?${params.toString()}`, 4000);
+      const r = await fetchWithTimeout(`https://openlibrary.org/search.json?${params.toString()}`, OL_TIMEOUT);
       if (r.ok) {
         const data = await r.json();
         const doc = data.docs?.[0];
@@ -271,7 +281,7 @@ async function enrichBook(book) {
 
   if (book.isbn && (!book.pages || !book.categories)) {
     try {
-      const r = await fetchWithTimeout(`https://openlibrary.org/isbn/${book.isbn}.json`, 4000);
+      const r = await fetchWithTimeout(`https://openlibrary.org/isbn/${book.isbn}.json`, OL_TIMEOUT);
       if (r.ok) {
         const data = await r.json();
         if (!book.pages && data.number_of_pages) book.pages = data.number_of_pages;
@@ -287,7 +297,7 @@ async function enrichBook(book) {
 
   if (!book.categories && workKey) {
     try {
-      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, 4000);
+      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, OL_TIMEOUT);
       if (r.ok) {
         const data = await r.json();
         if (Array.isArray(data.subjects) && data.subjects.length) {
@@ -301,7 +311,7 @@ async function enrichBook(book) {
 
   if (!book.pages && workKey) {
     try {
-      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}/editions.json?limit=20`, 4000);
+      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}/editions.json?limit=20`, OL_TIMEOUT);
       if (r.ok) {
         const data = await r.json();
         const withPages = (data.entries || []).find(e => e.number_of_pages);
@@ -336,7 +346,7 @@ async function enrichBook(book) {
   // one when Google doesn't — worth one more try before giving up.
   if (!book.description && workKey) {
     try {
-      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, 4000);
+      const r = await fetchWithTimeout(`https://openlibrary.org${workKey}.json`, OL_TIMEOUT);
       if (r.ok) {
         const data = await r.json();
         const desc = typeof data.description === 'string' ? data.description : data.description?.value;
@@ -809,7 +819,7 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
       // it displayed, so hitting refresh kept surfacing near-identical sets.
       const q = `subject:"${subjectName}" AND first_publish_year:[${from || 1000} TO ${to || new Date().getFullYear()}]`;
       const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${targetLimit * 12}&fields=key,title,author_name,cover_i,first_publish_year`;
-      const r = await fetchWithTimeout(url, 8000);
+      const r = await fetchWithTimeout(url, OL_TIMEOUT);
       if (r.ok) {
         const data = await r.json();
         works = (data.docs || []).map(d => ({
@@ -833,7 +843,7 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
       if (works.length < targetLimit * 3) {
         try {
           const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
-          const r2 = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 15}`, 8000);
+          const r2 = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 15}`, OL_TIMEOUT);
           if (r2.ok) {
             const extra = (await r2.json()).works || [];
             const seen = new Set(works.map(w => w.key));
@@ -847,7 +857,7 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
       }
     } else {
       const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
-      const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`, 8000);
+      const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`, OL_TIMEOUT);
       if (r.ok) works = (await r.json()).works || [];
     }
   } catch (err) {
@@ -1001,7 +1011,7 @@ async function lookupOriginalYears(titles) {
   const results = await Promise.all(normalized.map(async (title) => {
     const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(title)}&fields=title,first_publish_year&limit=1`;
     try {
-      const r = await fetchWithTimeout(url, 5000);
+      const r = await fetchWithTimeout(url, OL_TIMEOUT);
       if (!r.ok) return [title, null];
       const data = await r.json();
       return [title, data.docs?.[0]?.first_publish_year || null];
