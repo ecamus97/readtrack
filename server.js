@@ -135,7 +135,7 @@ function mapGoogleBooksItem(item) {
 async function fetchGoogleBooksQuery(q) {
   const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=12`);
   try {
-    const r = await fetchWithTimeout(url, OL_TIMEOUT);
+    const r = await fetchWithTimeout(url, 8000);
     const data = await r.json();
     if (!r.ok || data.error) {
       console.error('Google Books returned an error:', r.status, JSON.stringify(data.error || data));
@@ -176,6 +176,10 @@ async function searchGoogleBooks(q) {
 }
 
 async function searchOpenLibrary(q) {
+  // A fallback only reached when Google Books already failed/found nothing —
+  // given OpenLibrary is currently unreachable from Render often enough to
+  // not be relied on, this uses the short "best-effort" timeout rather than
+  // waiting the full OL_TIMEOUT for something that's likely to fail anyway.
   const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=12&fields=key,title,author_name,cover_i,isbn,number_of_pages_median,first_publish_year,subject,language`;
   try {
     const r = await fetchWithTimeout(url, OL_TIMEOUT);
@@ -240,15 +244,18 @@ async function fetchWithTimeout(url, ms, retries = 0) {
   }
 }
 
-// Render's logs showed OpenLibrary calls consistently timing out ("This
-// operation was aborted") at the old 8s timeout across many separate
-// requests over several minutes — not a one-off blip. Fetching the same
-// OpenLibrary endpoints directly (outside Render) worked fine and quickly,
-// so this looks like OpenLibrary responding noticeably slower to Render's
-// network specifically, rather than being down outright. A longer timeout
-// gives those slow-but-real responses a chance to actually come back
-// instead of aborting into an empty result every time.
-const OL_TIMEOUT = 20000;
+// Render's production logs showed EVERY OpenLibrary call consistently
+// timing out ("This operation was aborted") over several minutes, even
+// after raising the timeout to 20s — while the exact same endpoints
+// responded instantly when fetched from outside Render. That points to
+// OpenLibrary throttling/blocking Render's shared egress IP specifically,
+// not just being slow — no timeout length fixes that. So OpenLibrary is
+// now treated everywhere as a best-effort bonus source only (never
+// required, never blocking): a short timeout so a single call degrades
+// fast instead of eating many seconds for something that reliably fails,
+// while Google Books (confirmed reachable from Render) carries every path
+// that actually needs to work.
+const OL_TIMEOUT = 6000;
 
 // Tries several sources in order to fill in missing pages/categories/
 // description. Open Library goes first (no quota); Google Books is a
@@ -776,26 +783,80 @@ async function libraryTaste(user_id) {
   return { topGenres, avgYear, hasReadBooks: rows.length > 0 };
 }
 
-// OpenLibrary's /subjects/{x}.json?published_in=Y-Z looked like the right
-// tool for year filtering, but it turned out to filter by EDITION publish
-// date, not the work's original one — a reissue/reprint of a centuries-old
-// classic can easily have a 2020s edition, so "published_in=2020-2029" was
-// happily returning things like Don Quixote. The real fix is search.json's
-// `first_publish_year:[X TO Y]` Solr range query, which reflects the WORK's
-// actual original year and searches OpenLibrary's whole corpus.
+// Render's network can reach Google Books fine, but calls to OpenLibrary
+// from Render consistently time out (confirmed in production logs — every
+// single OpenLibrary request aborted over several minutes, while the exact
+// same endpoints worked instantly from outside Render). So Google Books is
+// now the PRIMARY source for subject/category browsing and recommendations;
+// OpenLibrary is only ever fetched as a best-effort supplement in parallel
+// with a short timeout that can never block or fail the request — if it
+// times out or errors, its candidates are just missing, nothing more.
 //
-// A later attempt switched year-scoped requests over to the curated
-// /subjects/ index instead (trying to fix recommendations collapsing to one
-// book), but that broke explicit year-filter browsing that had been working
-// well: /subjects/ only returns its top-N works ranked by popularity/edition
-// count, and for most genres essentially none of the truly recent (e.g.
-// "2020s") releases are popular/established enough yet to show up in that
-// top-N at all — "Fantasy" + "2020s" came back with zero results because of
-// this, not a bug in the filtering logic. search.json's range query has no
-// such recency bias, so it's back to being the source whenever a year
-// constraint (explicit or implicit) is in play; /subjects/ is only used for
-// the no-year-filter case, where "which are the most established/popular
-// works in this subject" is exactly the right question to ask.
+// The tradeoff: Google's `publishedDate` reflects a specific EDITION, not a
+// work's true original year (a reissue of a classic can show as "2021").
+// That's a real accuracy cost, but a slightly-imprecise year beats a request
+// that reliably returns nothing at all, which is what depending on
+// OpenLibrary as the primary/required source was doing in production.
+
+async function fetchSubjectBooksFromGoogle(subjectName, maxResults) {
+  const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(`subject:${subjectName}`)}&maxResults=${Math.min(maxResults, 40)}&orderBy=relevance`);
+  try {
+    const r = await fetchWithTimeout(url, 8000);
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      console.error('Google Books subject lookup failed:', r.status, JSON.stringify(data.error || data));
+      return [];
+    }
+    return (data.items || []).map(item => {
+      const info = item.volumeInfo || {};
+      return {
+        api_id: item.id,
+        title: info.title || 'Untitled',
+        authors: (info.authors || []).map(name => ({ name })),
+        cover_url: info.imageLinks?.thumbnail || null,
+        first_publish_year: info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null
+      };
+    });
+  } catch (err) {
+    console.error('Google Books subject lookup failed:', err.message);
+    return [];
+  }
+}
+
+async function fetchSubjectBooksFromOpenLibrary(subjectName, from, to, limit) {
+  try {
+    if (from || to) {
+      const q = `subject:"${subjectName}" AND first_publish_year:[${from || 1000} TO ${to || new Date().getFullYear()}]`;
+      const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${limit}&fields=key,title,author_name,cover_i,first_publish_year`;
+      const r = await fetchWithTimeout(url, OL_TIMEOUT);
+      if (!r.ok) return [];
+      const data = await r.json();
+      return (data.docs || []).map(d => ({
+        api_id: `ol-${d.key}`,
+        title: d.title,
+        authors: (d.author_name || []).map(name => ({ name })),
+        cover_url: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null,
+        first_publish_year: d.first_publish_year
+      }));
+    }
+    const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
+    const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${limit}`, OL_TIMEOUT);
+    if (!r.ok) return [];
+    const data = await r.json();
+    return (data.works || []).map(w => ({
+      api_id: `ol-${w.key}`,
+      title: w.title,
+      authors: (w.authors || []).map(a => ({ name: a.name })),
+      cover_url: w.cover_id ? `https://covers.openlibrary.org/b/id/${w.cover_id}-M.jpg` : null,
+      first_publish_year: w.first_publish_year
+    }));
+  } catch (err) {
+    // Non-blocking by design — this is a bonus source, never a required one.
+    console.error('OpenLibrary subject lookup failed (non-blocking):', err.message);
+    return [];
+  }
+}
+
 async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYear, yearFrom, yearTo) {
   const targetLimit = limit || 8;
 
@@ -806,62 +867,16 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
     to = Math.max(preferredYear + 20, new Date().getFullYear());
   }
 
-  // A network hiccup or timeout hitting OpenLibrary here used to bubble up
-  // and blow up the whole request (browse showing "Could not reach Open
-  // Library" instead of just a thin/empty result) — caught locally now so a
-  // single slow/failed OL call degrades to "no candidates from this source"
-  // rather than failing the entire browse/recommendation request.
-  let works = [];
-  try {
-    if (from || to) {
-      // Fetch a much bigger pool than what's actually returned — refreshing
-      // Recommended only shuffled within a top slice barely bigger than what
-      // it displayed, so hitting refresh kept surfacing near-identical sets.
-      const q = `subject:"${subjectName}" AND first_publish_year:[${from || 1000} TO ${to || new Date().getFullYear()}]`;
-      const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${targetLimit * 12}&fields=key,title,author_name,cover_i,first_publish_year`;
-      const r = await fetchWithTimeout(url, OL_TIMEOUT);
-      if (r.ok) {
-        const data = await r.json();
-        works = (data.docs || []).map(d => ({
-          key: d.key,
-          title: d.title,
-          authors: (d.author_name || []).map(name => ({ name })),
-          cover_id: d.cover_i,
-          first_publish_year: d.first_publish_year
-        }));
-      }
-
-      // search.json's `subject:"X"` field match has patchy recall for some
-      // genres/phrasings (part of why recommendations occasionally came back
-      // thin) — if it didn't find much, also pull from the curated /subjects/
-      // index as a supplementary source and merge it in. This only ADDS
-      // candidates; the exact year-range filter below still applies to
-      // everything the same way regardless of where it came from, so this
-      // can't reintroduce out-of-range results the way relying on /subjects/
-      // as the PRIMARY source did (its top-N-by-popularity ordering is what
-      // caused the "Fantasy + 2020s" zero-results bug).
-      if (works.length < targetLimit * 3) {
-        try {
-          const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
-          const r2 = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 15}`, OL_TIMEOUT);
-          if (r2.ok) {
-            const extra = (await r2.json()).works || [];
-            const seen = new Set(works.map(w => w.key));
-            for (const w of extra) {
-              if (!seen.has(w.key)) { works.push(w); seen.add(w.key); }
-            }
-          }
-        } catch (err) {
-          console.error('OpenLibrary /subjects/ widen failed:', err.message);
-        }
-      }
-    } else {
-      const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
-      const r = await fetchWithTimeout(`https://openlibrary.org/subjects/${encodeURIComponent(slug)}.json?limit=${targetLimit * 5}`, OL_TIMEOUT);
-      if (r.ok) works = (await r.json()).works || [];
-    }
-  } catch (err) {
-    console.error('OpenLibrary lookup failed:', err.message);
+  const [googleWorks, olWorks] = await Promise.all([
+    fetchSubjectBooksFromGoogle(subjectName, targetLimit * 4),
+    fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 8)
+  ]);
+  const seen = new Set();
+  const works = [];
+  for (const w of [...googleWorks, ...olWorks]) {
+    if (seen.has(w.api_id)) continue;
+    seen.add(w.api_id);
+    works.push(w);
   }
 
   // A hard year filter, requested either explicitly (yearFrom/yearTo, from
@@ -871,6 +886,11 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
   // books kept slipping into recommendations for a user who reads nothing
   // older than 2006. A smaller, correctly-scoped result beats a wrong one.
   let candidates = works.filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
+  if (from || to) {
+    const lo = from || 1000;
+    const hi = to || new Date().getFullYear();
+    candidates = candidates.filter(w => w.first_publish_year && w.first_publish_year >= lo && w.first_publish_year <= hi);
+  }
 
   let selected;
   if (preferredYear) {
@@ -895,11 +915,11 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
   }
 
   return selected.slice(0, targetLimit).map(w => ({
-    api_id: `ol-${w.key}`,
+    api_id: w.api_id,
     isbn: null,
     title: w.title,
     authors: (w.authors || []).map(a => a.name).join(', '),
-    cover_url: w.cover_id ? `https://covers.openlibrary.org/b/id/${w.cover_id}-M.jpg` : null,
+    cover_url: w.cover_url || null,
     pages: null,
     published_year: w.first_publish_year || null,
     categories: subjectName,
