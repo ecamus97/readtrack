@@ -256,17 +256,13 @@ async function fetchWithTimeout(url, ms, retries = 0, headers) {
 }
 
 // Render's production logs showed EVERY OpenLibrary call consistently
-// timing out ("This operation was aborted") over several minutes, even
-// after raising the timeout to 20s — while the exact same endpoints
-// responded instantly when fetched from outside Render. That points to
-// OpenLibrary throttling/blocking Render's shared egress IP specifically,
-// not just being slow — no timeout length fixes that. So OpenLibrary is
-// now treated everywhere as a best-effort bonus source only (never
-// required, never blocking): a short timeout so a single call degrades
-// fast instead of eating many seconds for something that reliably fails,
-// while Google Books (confirmed reachable from Render) carries every path
-// that actually needs to work.
-const OL_TIMEOUT = 6000;
+// timing out ("This operation was aborted") over several minutes at 8s,
+// even after raising it to 20s — the real cause turned out to be that every
+// request was going out with no identifying User-Agent (see OL_HEADERS),
+// getting throttled hard as anonymous traffic on OpenLibrary's shared rate
+// limit. With a proper User-Agent now sent, a normal 8s timeout should be
+// plenty for OpenLibrary's actual (fast) response time.
+const OL_TIMEOUT = 8000;
 
 // Tries several sources in order to fill in missing pages/categories/
 // description. Open Library goes first (no quota); Google Books is a
@@ -794,20 +790,16 @@ async function libraryTaste(user_id) {
   return { topGenres, avgYear, hasReadBooks: rows.length > 0 };
 }
 
-// Render's network can reach Google Books fine, but calls to OpenLibrary
-// from Render consistently time out (confirmed in production logs — every
-// single OpenLibrary request aborted over several minutes, while the exact
-// same endpoints worked instantly from outside Render). So Google Books is
-// now the PRIMARY source for subject/category browsing and recommendations;
-// OpenLibrary is only ever fetched as a best-effort supplement in parallel
-// with a short timeout that can never block or fail the request — if it
-// times out or errors, its candidates are just missing, nothing more.
-//
-// The tradeoff: Google's `publishedDate` reflects a specific EDITION, not a
-// work's true original year (a reissue of a classic can show as "2021").
-// That's a real accuracy cost, but a slightly-imprecise year beats a request
-// that reliably returns nothing at all, which is what depending on
-// OpenLibrary as the primary/required source was doing in production.
+// OpenLibrary is the PRIMARY source again for subject/category browsing and
+// recommendations, now that it's sending a proper identified User-Agent
+// (see OL_HEADERS) — it was getting throttled hard as anonymous traffic
+// before, not genuinely unreachable. OpenLibrary's first_publish_year is the
+// WORK's true original year; Google's `publishedDate` is a specific
+// EDITION's date (a reissue of a classic can show as "2021"), which is why
+// recommendations/browse looked "wrong era" when Google was primary. Google
+// Books is now only a fallback, fetched when OpenLibrary comes back thin or
+// fails outright — never the first choice, so its less accurate year data
+// only shows up when there's nothing better available.
 
 async function fetchSubjectBooksFromGoogle(subjectName, maxResults) {
   const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(`subject:${subjectName}`)}&maxResults=${Math.min(maxResults, 40)}&orderBy=relevance`);
@@ -878,16 +870,18 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
     to = Math.max(preferredYear + 20, new Date().getFullYear());
   }
 
-  const [googleWorks, olWorks] = await Promise.all([
-    fetchSubjectBooksFromGoogle(subjectName, targetLimit * 4),
-    fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 8)
-  ]);
-  const seen = new Set();
-  const works = [];
-  for (const w of [...googleWorks, ...olWorks]) {
-    if (seen.has(w.api_id)) continue;
-    seen.add(w.api_id);
-    works.push(w);
+  let works = await fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 8);
+
+  // Only reach for Google Books (less accurate year data) when OpenLibrary
+  // alone didn't come back with much — a real fallback, not an always-on
+  // second source, so accurate OL years aren't diluted with edition-year
+  // guesses unless they're actually needed to fill out the results.
+  if (works.length < targetLimit * 3) {
+    const googleWorks = await fetchSubjectBooksFromGoogle(subjectName, targetLimit * 4);
+    const seen = new Set(works.map(w => w.api_id));
+    for (const w of googleWorks) {
+      if (!seen.has(w.api_id)) { works.push(w); seen.add(w.api_id); }
+    }
   }
 
   // A hard year filter, requested either explicitly (yearFrom/yearTo, from
