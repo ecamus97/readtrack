@@ -248,7 +248,10 @@ app.get('/api/search', async (req, res) => {
 // scraper-style traffic, which likely explains why Render's shared IP was
 // getting throttled into oblivion (many different apps on that IP, all
 // unidentified, blowing well past 1 req/sec combined).
-const OL_HEADERS = { 'User-Agent': 'ReadTrack (contact: ecamus@apprecio.com)' };
+// Matches OpenLibrary's documented format exactly: "AppName (email)" — no
+// "contact:" prefix, just the bare email in parentheses, same as their
+// own example (MyLibraryApp (contact@example.org)).
+const OL_HEADERS = { 'User-Agent': 'ReadTrack (ecamus@apprecio.com)' };
 
 // Retries default to 0 now — with the longer OL_TIMEOUT below, a retry on
 // top would let a single slow OpenLibrary call cost 40+ seconds (timeout,
@@ -805,6 +808,37 @@ async function libraryTaste(user_id) {
   return { topGenres, avgYear, hasReadBooks: rows.length > 0 };
 }
 
+// Wikidata is a completely separate service from OpenLibrary/archive.org
+// (run by the Wikimedia Foundation), so it isn't affected by whatever is
+// throttling Render's traffic to OpenLibrary. It has very good, accurate
+// "publication date" (P577) data for well-known books, which is exactly the
+// case that was going wrong: Google's edition-specific publishedDate making
+// a modern reissue of a classic look "current". Used as a last-resort
+// correction, only on the small final batch of results (not the whole raw
+// pool), so it stays cheap and never blocks the request if it's slow/down.
+async function lookupWikidataPublicationYear(title) {
+  try {
+    const searchUrl = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(title)}&language=en&type=item&limit=1&format=json`;
+    const r = await fetchWithTimeout(searchUrl, 5000);
+    if (!r.ok) return null;
+    const data = await r.json();
+    const id = data.search?.[0]?.id;
+    if (!id) return null;
+
+    const claimUrl = `https://www.wikidata.org/w/api.php?action=wbgetclaims&entity=${id}&property=P577&format=json`;
+    const r2 = await fetchWithTimeout(claimUrl, 5000);
+    if (!r2.ok) return null;
+    const data2 = await r2.json();
+    const time = data2.claims?.P577?.[0]?.mainsnak?.datavalue?.value?.time; // e.g. "+1813-01-28T00:00:00Z"
+    if (!time) return null;
+    const match = time.match(/^\+(\d{3,4})-/);
+    return match ? parseInt(match[1]) : null;
+  } catch (err) {
+    console.error('Wikidata publication year lookup failed (non-blocking):', err.message);
+    return null;
+  }
+}
+
 // Tried making OpenLibrary primary again after adding an identified
 // User-Agent (OL_HEADERS), on the theory it was being throttled as
 // anonymous traffic — but production logs showed it's STILL aborting every
@@ -834,7 +868,8 @@ async function fetchSubjectBooksFromGoogle(subjectName, maxResults) {
       title: info.title || 'Untitled',
       authors: (info.authors || []).map(name => ({ name })),
       cover_url: info.imageLinks?.thumbnail || null,
-      first_publish_year: info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null
+      first_publish_year: info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null,
+      source: 'google'
     };
   });
 }
@@ -852,7 +887,8 @@ async function fetchSubjectBooksFromOpenLibrary(subjectName, from, to, limit) {
         title: d.title,
         authors: (d.author_name || []).map(name => ({ name })),
         cover_url: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null,
-        first_publish_year: d.first_publish_year
+        first_publish_year: d.first_publish_year,
+        source: 'ol'
       }));
     }
     const slug = subjectName.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '_');
@@ -864,7 +900,8 @@ async function fetchSubjectBooksFromOpenLibrary(subjectName, from, to, limit) {
       title: w.title,
       authors: (w.authors || []).map(a => ({ name: a.name })),
       cover_url: w.cover_id ? `https://covers.openlibrary.org/b/id/${w.cover_id}-M.jpg` : null,
-      first_publish_year: w.first_publish_year
+      first_publish_year: w.first_publish_year,
+      source: 'ol'
     }));
   } catch (err) {
     // Non-blocking by design — this is a bonus source, never a required one.
@@ -930,6 +967,20 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
   // older than 2006. A smaller, correctly-scoped result beats a wrong one.
   let candidates = works.filter(w => !excludeTitles || !excludeTitles.has((w.title || '').toLowerCase()));
   if (from || to) {
+    // Google-sourced candidates carry an edition-specific year, not the
+    // work's true original year — correct those via Wikidata (a separate
+    // service from OpenLibrary, not affected by the same throttling) before
+    // filtering by range. Without this, a modern reissue of an old classic
+    // can slip through a "2020s" filter looking like a genuinely new book.
+    // OpenLibrary-sourced candidates already have the correct year and
+    // don't need this.
+    const googleSourced = candidates.filter(w => w.source === 'google');
+    if (googleSourced.length) {
+      const corrections = await Promise.all(googleSourced.map(async w => [w.api_id, await lookupWikidataPublicationYear(w.title)]));
+      const correctionMap = new Map(corrections.filter(([, year]) => year !== null));
+      candidates = candidates.map(w => correctionMap.has(w.api_id) ? { ...w, first_publish_year: correctionMap.get(w.api_id) } : w);
+    }
+
     const lo = from || 1000;
     const hi = to || new Date().getFullYear();
     candidates = candidates.filter(w => w.first_publish_year && w.first_publish_year >= lo && w.first_publish_year <= hi);
