@@ -251,7 +251,7 @@ app.get('/api/search', async (req, res) => {
 // Matches OpenLibrary's documented format exactly: "AppName (email)" — no
 // "contact:" prefix, just the bare email in parentheses, same as their
 // own example (MyLibraryApp (contact@example.org)).
-const OL_HEADERS = { 'User-Agent': 'ReadTrack (ecamus@apprecio.com)' };
+const OL_HEADERS = { 'User-Agent': 'ReadTrack (ecamussolari@gmail.com)' };
 
 // Retries default to 0 now — with the longer OL_TIMEOUT below, a retry on
 // top would let a single slow OpenLibrary call cost 40+ seconds (timeout,
