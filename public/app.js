@@ -298,9 +298,13 @@ async function submitAuthForm() {
       if (!data.session) {
         // Some Supabase projects require email confirmation before a session
         // is issued — let the person know instead of appearing to hang.
-        showAuthError('Account created! Check your email to confirm it, then log in.');
+        // toggleAuthMode() must run BEFORE showAuthError(): its last line
+        // hides the auth-error element, which was wiping this exact message
+        // out the instant it was shown when the calls were the other way
+        // around.
         authMode = 'signup';
         toggleAuthMode();
+        showAuthError('Account created! Check your email to confirm it, then log in.');
         return;
       }
       await onAuthenticated(data.session);
