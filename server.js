@@ -493,6 +493,9 @@ app.patch('/api/user-books/:id', async (req, res) => {
     if (v !== undefined) { fields.push(`${k} = ?`); values.push(v); }
   }
   if (!fields.length) return res.status(400).json({ error: 'nothing to update' });
+  // Stamped on every update (not just progress ones) so computeStats can use
+  // it as the "when did this partial-pages contribution happen" bucket below.
+  fields.push('updated_at = now()');
   values.push(req.params.id);
   await db.run(`UPDATE user_books SET ${fields.join(', ')} WHERE id = ?`, values);
   res.json({ ok: true, autoCompleted: status === 'leido' && resultingStatus === 'leyendo' && progress_percent === 100 });
@@ -644,7 +647,24 @@ async function computeStats(user_id) {
     paginasPorMes[mes] = (paginasPorMes[mes] || 0) + (b.pages || 0);
   }
 
-  const totalPaginas = leidos.reduce((sum, b) => sum + (b.pages || 0), 0);
+  // Books currently being read also contribute pages, proportional to how far
+  // in the person is (pages * progress_percent / 100) — bucketed by when the
+  // progress was last updated (falls back to "now" if that's ever missing),
+  // so the monthly chart reflects reading that's actually happening this
+  // month instead of waiting for the book to be finished before counting
+  // anything. Once a book crosses to 'leido' it drops out of this loop
+  // entirely and its full page count is counted once via the block above, so
+  // nothing is ever double-counted.
+  const enProgreso = books.filter(b => b.status === 'leyendo' && b.pages && b.progress_percent > 0);
+  let paginasEnProgreso = 0;
+  for (const b of enProgreso) {
+    const paginasLeidas = Math.round((b.pages * b.progress_percent) / 100);
+    paginasEnProgreso += paginasLeidas;
+    const mes = (b.updated_at ? new Date(b.updated_at) : new Date()).toISOString().slice(0, 7);
+    paginasPorMes[mes] = (paginasPorMes[mes] || 0) + paginasLeidas;
+  }
+
+  const totalPaginas = leidos.reduce((sum, b) => sum + (b.pages || 0), 0) + paginasEnProgreso;
 
   const diasPromedio = (() => {
     const conFechas = leidos.filter(b => b.start_date && b.end_date);

@@ -1362,7 +1362,7 @@ function openReadingNowDetail(id) {
       <li><span>Pages</span><strong>${b.pages || '—'}</strong></li>
       <li><span>Categories</span><strong>${escapeHtml(b.categories) || '—'}</strong></li>
       <li><span>Start date</span><strong>${b.start_date || '—'}</strong></li>
-      <li><span>Progress</span><strong>${b.progress_percent || 0}%</strong></li>
+      <li><span>Progress</span><strong>${b.progress_percent || 0}%${b.pages ? ` (${Math.round((b.pages * (b.progress_percent || 0)) / 100)} of ${b.pages} pages)` : ''}</strong></li>
     </ul>
     ${descriptionBlockHtml(b)}
     <div class="modal-actions">
