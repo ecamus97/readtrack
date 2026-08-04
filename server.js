@@ -892,21 +892,29 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
   // constraint (plain category browsing), imprecision matters less, so
   // Google goes first for speed/reliability and OpenLibrary is only a
   // best-effort bonus if Google alone comes back thin.
+  //
+  // Request sizes here are deliberately modest (roughly 2-3x what's shown,
+  // not 8-15x) — OpenLibrary's own API guidelines ask for "real-time,
+  // low-volume" use and explicitly discourage bulk-sized requests. Earlier
+  // in this app's life the limits crept up a lot chasing "more variety on
+  // refresh", which likely made OpenLibrary's rate limiting/abuse detection
+  // treat this app's traffic (sharing Render's IP with other apps) worse
+  // than it needs to.
   const yearMatters = !!(from || to);
   let works;
   if (yearMatters) {
-    works = await fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 8);
-    if (works.length < targetLimit * 3) {
-      const googleWorks = await fetchSubjectBooksFromGoogle(subjectName, targetLimit * 4);
+    works = await fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 3);
+    if (works.length < targetLimit * 2) {
+      const googleWorks = await fetchSubjectBooksFromGoogle(subjectName, targetLimit * 2);
       const seen = new Set(works.map(w => w.api_id));
       for (const w of googleWorks) {
         if (!seen.has(w.api_id)) { works.push(w); seen.add(w.api_id); }
       }
     }
   } else {
-    works = await fetchSubjectBooksFromGoogle(subjectName, targetLimit * 4);
-    if (works.length < targetLimit * 3) {
-      const olWorks = await fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 8);
+    works = await fetchSubjectBooksFromGoogle(subjectName, targetLimit * 2);
+    if (works.length < targetLimit * 2) {
+      const olWorks = await fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 3);
       const seen = new Set(works.map(w => w.api_id));
       for (const w of olWorks) {
         if (!seen.has(w.api_id)) { works.push(w); seen.add(w.api_id); }
