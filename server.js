@@ -126,6 +126,30 @@ function mapGoogleBooksItem(item) {
   };
 }
 
+// Google Books occasionally returns a transient 503 ("Service temporarily
+// unavailable") — unlike OpenLibrary's consistent, every-single-request
+// failures from Render, this looks like an ordinary occasional blip, so one
+// quick retry is worth it rather than giving up immediately.
+async function fetchGoogleBooksJson(url, timeoutMs = 8000, retries = 1) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await fetchWithTimeout(url, timeoutMs);
+      const data = await r.json();
+      if (r.ok && !data.error) return data;
+      if (attempt >= retries) {
+        console.error('Google Books returned an error:', r.status, JSON.stringify(data.error || data));
+        return null;
+      }
+    } catch (err) {
+      if (attempt >= retries) {
+        console.error('Google Books call failed:', err.message);
+        return null;
+      }
+    }
+    await new Promise(res => setTimeout(res, 400));
+  }
+}
+
 // Plain `q=<text>` full-text search against Google Books' whole corpus
 // (which also matches inside descriptions/blurbs, not just title/author) is
 // why some searches surfaced books with nothing obviously to do with what
@@ -134,18 +158,9 @@ function mapGoogleBooksItem(item) {
 // OpenLibrary fallback below.
 async function fetchGoogleBooksQuery(q) {
   const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=12`);
-  try {
-    const r = await fetchWithTimeout(url, 8000);
-    const data = await r.json();
-    if (!r.ok || data.error) {
-      console.error('Google Books returned an error:', r.status, JSON.stringify(data.error || data));
-      return null;
-    }
-    return (data.items || []).map(mapGoogleBooksItem);
-  } catch (err) {
-    console.error('Google Books call failed:', err.message);
-    return null;
-  }
+  const data = await fetchGoogleBooksJson(url);
+  if (!data) return null;
+  return (data.items || []).map(mapGoogleBooksItem);
 }
 
 async function searchGoogleBooks(q) {
@@ -790,40 +805,38 @@ async function libraryTaste(user_id) {
   return { topGenres, avgYear, hasReadBooks: rows.length > 0 };
 }
 
-// OpenLibrary is the PRIMARY source again for subject/category browsing and
-// recommendations, now that it's sending a proper identified User-Agent
-// (see OL_HEADERS) — it was getting throttled hard as anonymous traffic
-// before, not genuinely unreachable. OpenLibrary's first_publish_year is the
-// WORK's true original year; Google's `publishedDate` is a specific
-// EDITION's date (a reissue of a classic can show as "2021"), which is why
-// recommendations/browse looked "wrong era" when Google was primary. Google
-// Books is now only a fallback, fetched when OpenLibrary comes back thin or
-// fails outright — never the first choice, so its less accurate year data
-// only shows up when there's nothing better available.
+// Tried making OpenLibrary primary again after adding an identified
+// User-Agent (OL_HEADERS), on the theory it was being throttled as
+// anonymous traffic — but production logs showed it's STILL aborting every
+// single request even with that header. That rules out "unidentified
+// traffic rate limit" as the (whole) explanation; this looks like Render's
+// shared egress IP being throttled/blocked at a level a User-Agent header
+// can't fix. Google Books, by contrast, actually works from Render (aside
+// from the occasional ordinary transient 503, which fetchGoogleBooksJson
+// already retries once). So Google Books is back to being the PRIMARY
+// source here, with OpenLibrary only as a best-effort bonus fetched when
+// Google alone doesn't turn up enough — never required, never blocking.
+//
+// The known cost: Google's `publishedDate` reflects a specific EDITION, not
+// a work's true original year (a reissue of a classic can show as "2021"),
+// so year filtering/sorting is somewhat less precise when OpenLibrary
+// doesn't come through. A slightly-imprecise year beats a request that
+// reliably returns nothing.
 
 async function fetchSubjectBooksFromGoogle(subjectName, maxResults) {
   const url = withGoogleKey(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(`subject:${subjectName}`)}&maxResults=${Math.min(maxResults, 40)}&orderBy=relevance`);
-  try {
-    const r = await fetchWithTimeout(url, 8000);
-    const data = await r.json();
-    if (!r.ok || data.error) {
-      console.error('Google Books subject lookup failed:', r.status, JSON.stringify(data.error || data));
-      return [];
-    }
-    return (data.items || []).map(item => {
-      const info = item.volumeInfo || {};
-      return {
-        api_id: item.id,
-        title: info.title || 'Untitled',
-        authors: (info.authors || []).map(name => ({ name })),
-        cover_url: info.imageLinks?.thumbnail || null,
-        first_publish_year: info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null
-      };
-    });
-  } catch (err) {
-    console.error('Google Books subject lookup failed:', err.message);
-    return [];
-  }
+  const data = await fetchGoogleBooksJson(url);
+  if (!data) return [];
+  return (data.items || []).map(item => {
+    const info = item.volumeInfo || {};
+    return {
+      api_id: item.id,
+      title: info.title || 'Untitled',
+      authors: (info.authors || []).map(name => ({ name })),
+      cover_url: info.imageLinks?.thumbnail || null,
+      first_publish_year: info.publishedDate ? parseInt(info.publishedDate.slice(0, 4)) : null
+    };
+  });
 }
 
 async function fetchSubjectBooksFromOpenLibrary(subjectName, from, to, limit) {
@@ -870,17 +883,34 @@ async function fetchSubjectBooks(subjectName, excludeTitles, limit, preferredYea
     to = Math.max(preferredYear + 20, new Date().getFullYear());
   }
 
-  let works = await fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 8);
-
-  // Only reach for Google Books (less accurate year data) when OpenLibrary
-  // alone didn't come back with much — a real fallback, not an always-on
-  // second source, so accurate OL years aren't diluted with edition-year
-  // guesses unless they're actually needed to fill out the results.
-  if (works.length < targetLimit * 3) {
-    const googleWorks = await fetchSubjectBooksFromGoogle(subjectName, targetLimit * 4);
-    const seen = new Set(works.map(w => w.api_id));
-    for (const w of googleWorks) {
-      if (!seen.has(w.api_id)) { works.push(w); seen.add(w.api_id); }
+  // Which source to try first depends on whether a year constraint is in
+  // play (explicit year chips, or recommendations' implicit avgYear — which
+  // is ALWAYS set for recommendations). When it is, accuracy matters most —
+  // that's exactly the "gives me books from the wrong era" complaint — so
+  // it's worth paying OpenLibrary's ~8s timeout cost for its correct
+  // first_publish_year, even though it fails often. When there's no year
+  // constraint (plain category browsing), imprecision matters less, so
+  // Google goes first for speed/reliability and OpenLibrary is only a
+  // best-effort bonus if Google alone comes back thin.
+  const yearMatters = !!(from || to);
+  let works;
+  if (yearMatters) {
+    works = await fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 8);
+    if (works.length < targetLimit * 3) {
+      const googleWorks = await fetchSubjectBooksFromGoogle(subjectName, targetLimit * 4);
+      const seen = new Set(works.map(w => w.api_id));
+      for (const w of googleWorks) {
+        if (!seen.has(w.api_id)) { works.push(w); seen.add(w.api_id); }
+      }
+    }
+  } else {
+    works = await fetchSubjectBooksFromGoogle(subjectName, targetLimit * 4);
+    if (works.length < targetLimit * 3) {
+      const olWorks = await fetchSubjectBooksFromOpenLibrary(subjectName, from, to, targetLimit * 8);
+      const seen = new Set(works.map(w => w.api_id));
+      for (const w of olWorks) {
+        if (!seen.has(w.api_id)) { works.push(w); seen.add(w.api_id); }
+      }
     }
   }
 
