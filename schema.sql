@@ -148,6 +148,18 @@ create table if not exists club_goal_progress (
   unique (goal_id, user_id)
 );
 
+-- One row per user per calendar day they made reading progress on some book
+-- (see server.js PATCH /api/user-books/:id) — powers the daily reading
+-- streak on the Home dashboard. unique(user_id, activity_date) means
+-- updating progress multiple times in the same day only ever counts once.
+create table if not exists reading_activity (
+  id bigserial primary key,
+  user_id uuid not null references profiles(id) on delete cascade,
+  activity_date date not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, activity_date)
+);
+
 -- Auto-create a profile row whenever someone signs up via Supabase Auth.
 -- The frontend passes `name` and `username` as signup metadata; falls back
 -- to the part of the email before "@" if no name was given.

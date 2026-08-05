@@ -498,6 +498,17 @@ app.patch('/api/user-books/:id', async (req, res) => {
   fields.push('updated_at = now()');
   values.push(req.params.id);
   await db.run(`UPDATE user_books SET ${fields.join(', ')} WHERE id = ?`, values);
+
+  // Any progress update counts as today's reading-streak day, regardless of
+  // how many books or how many times it's nudged today (unique constraint
+  // on (user_id, activity_date) makes this a no-op after the first).
+  if (progress_percent !== undefined) {
+    await db.run(
+      `INSERT INTO reading_activity (user_id, activity_date) VALUES (?, CURRENT_DATE) ON CONFLICT (user_id, activity_date) DO NOTHING`,
+      [req.userId]
+    );
+  }
+
   res.json({ ok: true, autoCompleted: status === 'leido' && resultingStatus === 'leyendo' && progress_percent === 100 });
 });
 
@@ -724,6 +735,27 @@ async function computeStats(user_id) {
   const leidosEsteAnio = leidos.filter(b => b.end_date && b.end_date.startsWith(String(anioActual))).length;
   const leidosEsteMes = porMes[claveMesActual] || 0;
 
+  // Daily reading streak: consecutive calendar days (going backward from
+  // today) with at least one progress update logged in reading_activity.
+  // If today has nothing yet but yesterday does, the streak still shows as
+  // "alive" (counted through yesterday) rather than snapping to 0 the
+  // moment the clock rolls over — it only breaks once a full day is
+  // skipped with no activity at all.
+  const actividad = await db.all('SELECT activity_date FROM reading_activity WHERE user_id = ? ORDER BY activity_date DESC', [user_id]);
+  const rachaActual = (() => {
+    if (!actividad.length) return 0;
+    const dias = new Set(actividad.map(a => a.activity_date.toISOString ? a.activity_date.toISOString().slice(0, 10) : String(a.activity_date).slice(0, 10)));
+    const cursor = new Date();
+    const clave = d => d.toISOString().slice(0, 10);
+    if (!dias.has(clave(cursor))) cursor.setDate(cursor.getDate() - 1);
+    let racha = 0;
+    while (dias.has(clave(cursor))) {
+      racha++;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    return racha;
+  })();
+
   return {
     total_leidos: leidos.length,
     total_leyendo: books.filter(b => b.status === 'leyendo').length,
@@ -744,7 +776,8 @@ async function computeStats(user_id) {
     meta_mensual: meta ? meta.monthly_target : null,
     leidos_este_anio: leidosEsteAnio,
     leidos_este_mes: leidosEsteMes,
-    anio: anioActual
+    anio: anioActual,
+    racha_actual: rachaActual
   };
 }
 
@@ -1073,6 +1106,54 @@ app.get('/api/recommendations', async (req, res) => {
   }
 });
 
+// Books your accepted contacts rated 4-5 stars, that you haven't already
+// added — a second, independent recommendation source from "what does my
+// library/genre history suggest" (fetchSubjectBooks above): this one is
+// purely "what did people I know actually love". These are already rows in
+// our own `books` table (contacts read them too), so no OpenLibrary/Google
+// call is needed at all.
+app.get('/api/recommendations/friends', async (req, res) => {
+  const contactRows = await db.all(`SELECT contact_user_id FROM contacts WHERE user_id = ? AND status = 'aceptado'`, [req.userId]);
+  const contactIds = contactRows.map(r => r.contact_user_id);
+  if (!contactIds.length) return res.json({ books: [], hasContacts: false });
+
+  const placeholders = contactIds.map(() => '?').join(',');
+  const rows = await db.all(`
+    SELECT b.id, b.api_id, b.isbn, b.title, b.authors, b.cover_url, b.pages,
+           b.published_year, b.categories, b.language, b.description,
+           AVG(ub.rating)::float as avg_rating,
+           COUNT(*) as rater_count,
+           array_agg(DISTINCT p.name) as rater_names
+    FROM user_books ub
+    JOIN books b ON b.id = ub.book_id
+    JOIN profiles p ON p.id = ub.user_id
+    WHERE ub.user_id IN (${placeholders}) AND ub.status = 'leido' AND ub.rating >= 4
+      AND ub.book_id NOT IN (SELECT book_id FROM user_books WHERE user_id = ?)
+    GROUP BY b.id
+    ORDER BY AVG(ub.rating) DESC, COUNT(*) DESC
+  `, [...contactIds, req.userId]);
+
+  // Shuffle within the (already highly-rated) pool so the refresh button
+  // surfaces different picks each time, same pattern as fetchSubjectBooks'
+  // own shuffle — otherwise every refresh would show the exact same top 8.
+  const books = shuffleArray(rows).slice(0, 8).map(r => ({
+    api_id: r.api_id,
+    isbn: r.isbn,
+    title: r.title,
+    authors: r.authors,
+    cover_url: r.cover_url,
+    pages: r.pages,
+    published_year: r.published_year,
+    categories: r.categories,
+    language: r.language,
+    description: r.description,
+    avg_rating: Math.round(r.avg_rating * 10) / 10,
+    recommended_by: r.rater_names
+  }));
+
+  res.json({ books, hasContacts: true });
+});
+
 app.get('/api/browse', async (req, res) => {
   // category and year range are independent and combinable — either one can
   // be used alone, or both together. If no category was picked but a year
@@ -1275,16 +1356,24 @@ app.get('/api/feed', async (req, res) => {
   const contactIds = contactRows.map(r => r.contact_user_id);
   if (!contactIds.length) return res.json([]);
 
+  // event_date is the date the *headline* actually happened on ("started
+  // reading" -> start_date, "finished reading" -> end_date) rather than
+  // ub.updated_at, which now also changes every time the person merely
+  // nudges their progress slider (see the pages-read-stats change) — using
+  // updated_at here made "started reading" entries jump to "today" every
+  // time progress was updated on a book started days/weeks earlier.
   const placeholders = contactIds.map(() => '?').join(',');
   const rows = await db.all(`
     SELECT ub.id, ub.status, ub.rating, ub.updated_at, ub.end_date, ub.start_date,
+           CASE WHEN ub.status = 'leido' THEN COALESCE(ub.end_date, ub.updated_at::date)
+                ELSE COALESCE(ub.start_date, ub.updated_at::date) END AS event_date,
            u.id as user_id, u.name as user_name, u.username, u.avatar_seed,
            b.title, b.authors, b.cover_url, b.pages, b.categories
     FROM user_books ub
     JOIN profiles u ON u.id = ub.user_id
     JOIN books b ON b.id = ub.book_id
     WHERE ub.user_id IN (${placeholders}) AND ub.status IN ('leido', 'leyendo')
-    ORDER BY ub.updated_at DESC
+    ORDER BY event_date DESC, ub.updated_at DESC
     LIMIT 30
   `, contactIds);
 

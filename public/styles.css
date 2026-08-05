@@ -447,6 +447,25 @@ select {
 .stat-card .big { font-size: 2.1rem; font-weight: 700; font-family: "Fraunces", serif; }
 .stat-card .caption { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
 .stat-card.highlight .caption { color: rgba(255,255,255,0.85); }
+
+/* Distinct from the green (goals) and orange (danger/accent) tones used
+   elsewhere on Home, so the streak reads as its own kind of thing at a
+   glance — gold ties it visually to the fire emoji and to the existing
+   gold accents used for ratings/pages-chart. */
+.streak-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--gold), #b9791f);
+  color: white;
+  box-shadow: var(--shadow);
+}
+.streak-flame { font-size: 2.1rem; line-height: 1; }
+.streak-count { font-size: 1.3rem; font-weight: 700; font-family: "Fraunces", serif; }
+.streak-caption { font-size: 0.85rem; color: rgba(255,255,255,0.85); margin-top: 2px; }
+
 .stat-card ul { margin: 6px 0 0; padding: 0; list-style: none; }
 .stat-card li { display: flex; justify-content: space-between; font-size: 0.88rem; padding: 5px 0; border-bottom: 1px dashed var(--border); }
 .stat-card li:last-child { border-bottom: none; }
@@ -1004,8 +1023,24 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
   height: auto;
   aspect-ratio: 2 / 3;
   background: var(--primary-light);
+  position: relative;
 }
 .book-card-cover-only .cover-wrap img { object-fit: cover; }
+
+/* Small "loved by your contacts" rating badge, overlaid on the cover corner
+   — only present on cards that came back with an avg_rating (currently just
+   the "Loved by your contacts" grid). */
+.rating-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: rgba(0,0,0,0.72);
+  color: white;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
 
 /* ---------- Reading progress (Home / Currently reading) ---------- */
 .reading-progress-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }

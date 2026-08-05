@@ -405,7 +405,7 @@ function refreshCurrentView(name) {
   const active = name || currentViewName();
   if (active === 'dashboard') loadDashboard();
   if (active === 'library') loadLibrary();
-  if (active === 'search') { loadRecommended(); updateClubModeBanner(); }
+  if (active === 'search') { loadRecommended(); loadFriendsRecommended(); updateClubModeBanner(); }
   if (active === 'social') loadSocial();
   if (active === 'profile') loadProfile();
   if (active === 'club-detail') loadClubDetail();
@@ -487,6 +487,7 @@ function runFilteredBrowse() {
 
 document.getElementById('resultsRefreshBtn').onclick = () => runFilteredBrowse();
 document.getElementById('recommendedRefreshBtn').onclick = () => loadRecommended();
+document.getElementById('friendsRecRefreshBtn').onclick = () => loadFriendsRecommended();
 
 function bookCoverHtml(cover_url) {
   return cover_url
@@ -500,7 +501,10 @@ function bookCoverHtml(cover_url) {
 function renderBookGrid(books, source) {
   return books.map((b, i) => `
     <div class="card book-card-cover-only clickable" onclick="showBookPreview(${i}, '${source}')" title="${escapeHtml(b.title)}">
-      <div class="cover-wrap">${bookCoverHtml(b.cover_url)}</div>
+      <div class="cover-wrap">
+        ${bookCoverHtml(b.cover_url)}
+        ${b.avg_rating ? `<span class="rating-badge">⭐ ${b.avg_rating}</span>` : ''}
+      </div>
     </div>
   `).join('') || '<p class="empty-state">No results. Try another search term.</p>';
 }
@@ -509,6 +513,7 @@ function renderBookGrid(books, source) {
 // free-text search and category/year browse results (they share one cache).
 function cacheForSource(source) {
   if (source === 'rec') return window.__recommendedCache;
+  if (source === 'friends') return window.__friendsRecCache;
   return window.__searchCache;
 }
 
@@ -570,6 +575,7 @@ function showBookPreview(index, source) {
       <li><span>Publication year</span><strong>${b.published_year || '—'}</strong></li>
       <li><span>Pages</span><strong>${b.pages || '—'}</strong></li>
       <li><span>Categories</span><strong>${escapeHtml(b.categories) || '—'}</strong></li>
+      ${b.recommended_by ? `<li><span>Loved by</span><strong>⭐ ${b.avg_rating} · ${escapeHtml(b.recommended_by.join(', '))}</strong></li>` : ''}
     </ul>
     ${descriptionBlockHtml(b)}
     <div class="modal-actions">
@@ -693,6 +699,30 @@ async function loadRecommended() {
     container.innerHTML = renderBookGrid(data.books, 'rec');
   } catch (e) {
     container.innerHTML = `<p class="empty-state">Couldn't load recommendations: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// Separate from loadRecommended() above — this one is "books your contacts
+// personally loved" (rated 4-5⭐) rather than "books that match your own
+// genre/year history". Hidden entirely (not just an empty state) when the
+// person has no accepted contacts yet, since there's nothing meaningful to
+// show or explain in that case.
+async function loadFriendsRecommended() {
+  const section = document.getElementById('friendsRecSection');
+  const container = document.getElementById('friendsRec');
+  if (window.__clubModeClubId) { section.classList.add('hidden'); return; }
+  try {
+    const data = await api(`/api/recommendations/friends`);
+    if (!data.hasContacts) { section.classList.add('hidden'); return; }
+    section.classList.remove('hidden');
+    if (!data.books.length) {
+      container.innerHTML = '<p class="empty-state">No standout picks from your contacts yet — once they rate books 4-5⭐, they\'ll show up here.</p>';
+      return;
+    }
+    window.__friendsRecCache = data.books;
+    container.innerHTML = renderBookGrid(data.books, 'friends');
+  } catch (e) {
+    container.innerHTML = `<p class="empty-state">Couldn't load contact recommendations: ${escapeHtml(e.message)}</p>`;
   }
 }
 
@@ -1220,6 +1250,18 @@ async function loadDashboard() {
       </div>
     </div>
 
+    ${stats.racha_actual > 0 ? `
+    <div class="dash-section">
+      <div class="streak-banner">
+        <span class="streak-flame">🔥</span>
+        <div>
+          <div class="streak-count">${stats.racha_actual} day${stats.racha_actual === 1 ? '' : 's'} streak</div>
+          <div class="streak-caption">Update your progress today to keep it going</div>
+        </div>
+      </div>
+    </div>
+    ` : ''}
+
     <div class="dash-section goals-row">
       <div class="stat-card highlight">
         <h4>${stats.anio} reading goal</h4>
@@ -1493,7 +1535,7 @@ async function loadFeed() {
   // reads like a news timeline ("Today", "Yesterday", "3 days ago", ...).
   const groups = [];
   for (const r of rows) {
-    const label = timeAgo(r.updated_at);
+    const label = timeAgo(r.event_date);
     const last = groups[groups.length - 1];
     if (last && last.label === label) last.rows.push(r);
     else groups.push({ label, rows: [r] });
