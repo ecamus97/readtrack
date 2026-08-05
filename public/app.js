@@ -1213,7 +1213,7 @@ async function loadDashboard() {
                 <div class="progress-bar reading-progress-bar"><div class="progress-bar-fill" style="width:${b.progress_percent || 0}%"></div></div>
                 <span class="reading-progress-pct">${b.progress_percent || 0}%</span>
               </div>
-              <button class="secondary small reading-progress-btn" onclick="openProgressModal(${b.id}, ${b.progress_percent || 0})">Update progress</button>
+              <button class="secondary small reading-progress-btn" onclick="openProgressModal(${b.id}, ${b.progress_percent || 0}, ${b.pages || 0})">Update progress</button>
             </div>
           </div>
         `).join('') || '<p class="empty-state">You\'re not reading anything right now. Head to Search & Add to start a book.</p>'}
@@ -1371,26 +1371,57 @@ function openReadingNowDetail(id) {
     ${descriptionBlockHtml(b)}
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">Close</button>
-      <button class="primary" onclick="closeModal(); openProgressModal(${b.id}, ${b.progress_percent || 0})">Update progress</button>
+      <button class="primary" onclick="closeModal(); openProgressModal(${b.id}, ${b.progress_percent || 0}, ${b.pages || 0})">Update progress</button>
     </div>
   `);
   loadDescriptionIfMissing(b);
 }
 
-function openProgressModal(userBookId, current) {
+function openProgressModal(userBookId, current, pages) {
+  const hasPages = !!pages;
+  const currentPage = hasPages ? Math.round((current / 100) * pages) : 0;
   openModal(`
     <h3>Update reading progress</h3>
+    ${hasPages ? `
+    <div class="modal-field">
+      <label>Current page (of ${pages})</label>
+      <input type="number" id="progress_page_input" min="0" max="${pages}" value="${currentPage}"
+             oninput="syncProgressFromPage(${pages})">
+    </div>
+    ` : ''}
     <div class="modal-field">
       <label>Progress: <span id="progress_display">${current}</span>%</label>
       <input type="range" id="progress_input" min="0" max="100" step="1" value="${current}"
-             oninput="document.getElementById('progress_display').textContent = this.value" style="width:100%">
+             oninput="syncProgressFromPercent(${pages || 0})" style="width:100%">
     </div>
-    <p class="settings-hint">Reaching 100% automatically marks this book as read.</p>
+    <p class="settings-hint">Reaching ${hasPages ? 'the last page (or 100%)' : '100%'} automatically marks this book as read.</p>
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">Cancel</button>
       <button class="primary" onclick="confirmProgressUpdate(${userBookId})">Save</button>
     </div>
   `);
+}
+
+// Keeps the page-number field and the percent slider in sync in both
+// directions — editing either one updates the other live. The percent only
+// reaches exactly 100 once the page count reaches (or passes) the book's
+// total, so a rounding quirk on the second-to-last page can never trigger
+// the "mark as read" auto-complete a page early.
+function syncProgressFromPage(pages) {
+  const pageInput = document.getElementById('progress_page_input');
+  const page = Math.max(0, Math.min(pages, parseInt(pageInput.value) || 0));
+  const pct = page >= pages ? 100 : Math.floor((page / pages) * 100);
+  document.getElementById('progress_input').value = pct;
+  document.getElementById('progress_display').textContent = pct;
+}
+
+function syncProgressFromPercent(pages) {
+  const pct = parseInt(document.getElementById('progress_input').value);
+  document.getElementById('progress_display').textContent = pct;
+  if (pages) {
+    const pageInput = document.getElementById('progress_page_input');
+    if (pageInput) pageInput.value = Math.round((pct / 100) * pages);
+  }
 }
 
 async function confirmProgressUpdate(userBookId) {
