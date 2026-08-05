@@ -1368,7 +1368,8 @@ app.get('/api/feed', async (req, res) => {
            CASE WHEN ub.status = 'leido' THEN COALESCE(ub.end_date, ub.updated_at::date)
                 ELSE COALESCE(ub.start_date, ub.updated_at::date) END AS event_date,
            u.id as user_id, u.name as user_name, u.username, u.avatar_seed,
-           b.title, b.authors, b.cover_url, b.pages, b.categories
+           b.api_id, b.isbn, b.title, b.authors, b.cover_url, b.pages,
+           b.published_year, b.categories, b.language, b.description
     FROM user_books ub
     JOIN profiles u ON u.id = ub.user_id
     JOIN books b ON b.id = ub.book_id

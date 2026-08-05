@@ -514,6 +514,7 @@ function renderBookGrid(books, source) {
 function cacheForSource(source) {
   if (source === 'rec') return window.__recommendedCache;
   if (source === 'friends') return window.__friendsRecCache;
+  if (source === 'feed') return window.__feedCache;
   return window.__searchCache;
 }
 
@@ -1528,6 +1529,13 @@ async function loadFeed() {
     return;
   }
 
+  // Cache + index (same pattern as the search/recommended grids) so tapping
+  // a cover can open the shared showBookPreview()/openAddModal() flow —
+  // that's what lets the person see the contact's book in detail and add it
+  // to their own library straight from the feed.
+  window.__feedCache = rows;
+  rows.forEach((r, i) => { r.__feedIndex = i; });
+
   const verb = { leido: 'finished reading', leyendo: 'started reading' };
   const icon = { leido: '✅', leyendo: '📖' };
 
@@ -1547,7 +1555,7 @@ async function loadFeed() {
       ${g.rows.map(r => `
         <div class="feed-card feed-card-${r.status}">
           <img class="feed-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.user_name)}" alt="">
-          <div class="cover-wrap feed-cover">${bookCoverHtml(r.cover_url)}</div>
+          <div class="cover-wrap feed-cover clickable" onclick="showBookPreview(${r.__feedIndex}, 'feed')" title="See details / add to your library">${bookCoverHtml(r.cover_url)}</div>
           <div class="feed-body">
             <p class="feed-headline">
               <span class="feed-icon">${icon[r.status] || ''}</span>
