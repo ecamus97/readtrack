@@ -756,6 +756,22 @@ async function computeStats(user_id) {
     return racha;
   })();
 
+  // Longest streak ever achieved (not just the current one) — used for the
+  // Consistency achievement badges below, since those should stay earned
+  // permanently rather than un-achieving themselves the moment a streak
+  // breaks (which racha_actual dropping to 0 would otherwise cause).
+  const rachaMaxima = (() => {
+    if (!actividad.length) return 0;
+    const dias = [...new Set(actividad.map(a => a.activity_date.toISOString ? a.activity_date.toISOString().slice(0, 10) : String(a.activity_date).slice(0, 10)))].sort();
+    let max = 1, run = 1;
+    for (let i = 1; i < dias.length; i++) {
+      const diff = (new Date(dias[i]) - new Date(dias[i - 1])) / (1000 * 60 * 60 * 24);
+      run = diff === 1 ? run + 1 : 1;
+      max = Math.max(max, run);
+    }
+    return max;
+  })();
+
   return {
     total_leidos: leidos.length,
     total_leyendo: books.filter(b => b.status === 'leyendo').length,
@@ -777,7 +793,8 @@ async function computeStats(user_id) {
     leidos_este_anio: leidosEsteAnio,
     leidos_este_mes: leidosEsteMes,
     anio: anioActual,
-    racha_actual: rachaActual
+    racha_actual: rachaActual,
+    racha_maxima: rachaMaxima
   };
 }
 
@@ -1915,6 +1932,11 @@ app.get('/api/achievements', async (req, res) => {
   const profile = await db.get('SELECT created_at FROM profiles WHERE id = ?', [req.userId]);
   const accountDays = profile ? Math.floor((Date.now() - new Date(profile.created_at).getTime()) / (1000 * 60 * 60 * 24)) : 0;
 
+  const clubCount = (await db.get(`SELECT COUNT(*) as c FROM club_members WHERE user_id = ?`, [req.userId])).c;
+  const ownedClubCount = (await db.get(`SELECT COUNT(*) as c FROM book_clubs WHERE owner_user_id = ?`, [req.userId])).c;
+  const completedGoalsCount = (await db.get(`SELECT COUNT(*) as c FROM club_goal_progress WHERE user_id = ?`, [req.userId])).c;
+  const reactionsGivenCount = (await db.get(`SELECT COUNT(*) as c FROM activity_reactions WHERE user_id = ?`, [req.userId])).c;
+
   const categories = [
     {
       id: 'milestones',
@@ -1935,7 +1957,10 @@ app.get('/api/achievements', async (req, res) => {
         { id: 'page_turner', icon: '📄', label: 'Page Turner', description: 'Read 1,000+ pages total', achieved: stats.total_paginas >= 1000 },
         { id: 'page_devourer', icon: '📰', label: 'Page Devourer', description: 'Read 2,500+ pages total', achieved: stats.total_paginas >= 2500 },
         { id: 'marathon_reader', icon: '🏃', label: 'Marathon Reader', description: 'Read 5,000+ pages total', achieved: stats.total_paginas >= 5000 },
-        { id: 'page_titan', icon: '🗻', label: 'Page Titan', description: 'Read 10,000+ pages total', achieved: stats.total_paginas >= 10000 }
+        { id: 'page_titan', icon: '🗻', label: 'Page Titan', description: 'Read 10,000+ pages total', achieved: stats.total_paginas >= 10000 },
+        { id: 'page_colossus', icon: '🌋', label: 'Page Colossus', description: 'Read 25,000+ pages total', achieved: stats.total_paginas >= 25000 },
+        { id: 'page_legend', icon: '🐉', label: 'Page Legend', description: 'Read 50,000+ pages total', achieved: stats.total_paginas >= 50000 },
+        { id: 'page_immortal', icon: '🌌', label: 'Page Immortal', description: 'Read 100,000+ pages total', achieved: stats.total_paginas >= 100000 }
       ]
     },
     {
@@ -1965,7 +1990,13 @@ app.get('/api/achievements', async (req, res) => {
         { id: 'on_a_roll', icon: '🔥', label: 'On a Roll', description: 'Finish books in 2 consecutive months', achieved: stats.meses_consecutivos >= 2 },
         { id: 'consistent_reader', icon: '🔥', label: 'Consistent Reader', description: 'Finish books in 4 consecutive months', achieved: stats.meses_consecutivos >= 4 },
         { id: 'unstoppable', icon: '🔥', label: 'Unstoppable', description: 'Finish books in 6 consecutive months', achieved: stats.meses_consecutivos >= 6 },
-        { id: 'one_year_strong', icon: '🎂', label: 'One Year Strong', description: 'Be a ReadTrack member for 365+ days', achieved: accountDays >= 365 }
+        { id: 'one_year_strong', icon: '🎂', label: 'One Year Strong', description: 'Be a ReadTrack member for 365+ days', achieved: accountDays >= 365 },
+        // racha_maxima (longest streak ever), not racha_actual (the live
+        // current one) — a streak-based achievement shouldn't un-achieve
+        // itself the moment today's streak happens to break.
+        { id: 'week_streak', icon: '📆', label: 'Week Streak', description: 'Reach a 7-day reading streak', achieved: stats.racha_maxima >= 7 },
+        { id: 'month_streak', icon: '🗓️', label: 'Month Streak', description: 'Reach a 30-day reading streak', achieved: stats.racha_maxima >= 30 },
+        { id: 'century_streak', icon: '💫', label: 'Century Streak', description: 'Reach a 100-day reading streak', achieved: stats.racha_maxima >= 100 }
       ]
     },
     {
@@ -1974,7 +2005,9 @@ app.get('/api/achievements', async (req, res) => {
       badges: [
         { id: 'curator', icon: '🗂️', label: 'Curator', description: 'Add 10 books to your library (any status)', achieved: stats.total_libros_biblioteca >= 10 },
         { id: 'collector', icon: '📦', label: 'Collector', description: 'Add 25 books to your library (any status)', achieved: stats.total_libros_biblioteca >= 25 },
-        { id: 'archivist', icon: '🏛️', label: 'Archivist', description: 'Add 50 books to your library (any status)', achieved: stats.total_libros_biblioteca >= 50 }
+        { id: 'archivist', icon: '🏛️', label: 'Archivist', description: 'Add 50 books to your library (any status)', achieved: stats.total_libros_biblioteca >= 50 },
+        { id: 'super_curator', icon: '🏰', label: 'Super Curator', description: 'Add 100 books to your library (any status)', achieved: stats.total_libros_biblioteca >= 100 },
+        { id: 'grand_archivist', icon: '🗼', label: 'Grand Archivist', description: 'Add 250 books to your library (any status)', achieved: stats.total_libros_biblioteca >= 250 }
       ]
     },
     {
@@ -1984,7 +2017,20 @@ app.get('/api/achievements', async (req, res) => {
         { id: 'first_friend', icon: '🤝', label: 'First Friend', description: 'Add your first contact', achieved: contactCount >= 1 },
         { id: 'social_butterfly', icon: '🦋', label: 'Social Butterfly', description: 'Add 3+ contacts', achieved: contactCount >= 3 },
         { id: 'community_builder', icon: '🌐', label: 'Community Builder', description: 'Add 10+ contacts', achieved: contactCount >= 10 },
-        { id: 'recruiter', icon: '✉️', label: 'Recruiter', description: 'Invite a friend who joins ReadTrack', achieved: recruitedCount >= 1 }
+        { id: 'recruiter', icon: '✉️', label: 'Recruiter', description: 'Invite a friend who joins ReadTrack', achieved: recruitedCount >= 1 },
+        { id: 'cheerleader', icon: '📣', label: 'Cheerleader', description: 'React to 10 of your contacts\' updates', achieved: reactionsGivenCount >= 10 },
+        { id: 'hype_person', icon: '🎉', label: 'Hype Person', description: 'React to 50 of your contacts\' updates', achieved: reactionsGivenCount >= 50 }
+      ]
+    },
+    {
+      id: 'book_club',
+      label: 'Book Club',
+      badges: [
+        { id: 'club_joined', icon: '📚', label: 'Book Clubbed', description: 'Join a book club', achieved: clubCount >= 1 },
+        { id: 'club_founder', icon: '🏛️', label: 'Club Founder', description: 'Create a book club', achieved: ownedClubCount >= 1 },
+        { id: 'club_socialite', icon: '🎪', label: 'Club Socialite', description: 'Be part of 3+ book clubs', achieved: clubCount >= 3 },
+        { id: 'goal_getter', icon: '✅', label: 'Goal Getter', description: 'Complete your first weekly club goal', achieved: completedGoalsCount >= 1 },
+        { id: 'weekly_warrior', icon: '🛡️', label: 'Weekly Warrior', description: 'Complete 10 weekly club goals', achieved: completedGoalsCount >= 10 }
       ]
     },
     {
