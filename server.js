@@ -1354,7 +1354,6 @@ app.get('/api/compare', async (req, res) => {
 app.get('/api/feed', async (req, res) => {
   const contactRows = await db.all(`SELECT contact_user_id FROM contacts WHERE user_id = ? AND status = 'aceptado'`, [req.userId]);
   const contactIds = contactRows.map(r => r.contact_user_id);
-  if (!contactIds.length) return res.json([]);
 
   // event_date is the date the *headline* actually happened on ("started
   // reading" -> start_date, "finished reading" -> end_date) rather than
@@ -1362,21 +1361,24 @@ app.get('/api/feed', async (req, res) => {
   // nudges their progress slider (see the pages-read-stats change) — using
   // updated_at here made "started reading" entries jump to "today" every
   // time progress was updated on a book started days/weeks earlier.
-  const placeholders = contactIds.map(() => '?').join(',');
-  const rows = await db.all(`
-    SELECT ub.id, ub.status, ub.rating, ub.updated_at, ub.end_date, ub.start_date, ub.progress_percent,
-           CASE WHEN ub.status = 'leido' THEN COALESCE(ub.end_date, ub.updated_at::date)
-                ELSE COALESCE(ub.start_date, ub.updated_at::date) END AS event_date,
-           u.id as user_id, u.name as user_name, u.username, u.avatar_seed,
-           b.api_id, b.isbn, b.title, b.authors, b.cover_url, b.pages,
-           b.published_year, b.categories, b.language, b.description
-    FROM user_books ub
-    JOIN profiles u ON u.id = ub.user_id
-    JOIN books b ON b.id = ub.book_id
-    WHERE ub.user_id IN (${placeholders}) AND ub.status IN ('leido', 'leyendo')
-    ORDER BY event_date DESC, ub.updated_at DESC
-    LIMIT 30
-  `, contactIds);
+  let rows = [];
+  if (contactIds.length) {
+    const placeholders = contactIds.map(() => '?').join(',');
+    rows = await db.all(`
+      SELECT ub.id, ub.status, ub.rating, ub.updated_at, ub.end_date, ub.start_date, ub.progress_percent,
+             CASE WHEN ub.status = 'leido' THEN COALESCE(ub.end_date, ub.updated_at::date)
+                  ELSE COALESCE(ub.start_date, ub.updated_at::date) END AS event_date,
+             u.id as user_id, u.name as user_name, u.username, u.avatar_seed,
+             b.api_id, b.isbn, b.title, b.authors, b.cover_url, b.pages,
+             b.published_year, b.categories, b.language, b.description
+      FROM user_books ub
+      JOIN profiles u ON u.id = ub.user_id
+      JOIN books b ON b.id = ub.book_id
+      WHERE ub.user_id IN (${placeholders}) AND ub.status IN ('leido', 'leyendo')
+      ORDER BY event_date DESC, ub.updated_at DESC
+      LIMIT 30
+    `, contactIds);
+  }
 
   // Attach each row's reaction counts (by emoji) and the current user's own
   // reaction (if any), in one extra query rather than N+1 per feed item.
@@ -1395,11 +1397,84 @@ app.get('/api/feed', async (req, res) => {
     }
   }
 
-  res.json(rows.map(r => ({
+  const updateRows = rows.map(r => ({
     ...r,
+    kind: 'update',
     reactions: reactionsByRow[r.id]?.counts || {},
     my_reaction: reactionsByRow[r.id]?.mine || null
-  })));
+  }));
+
+  // A small number of synthetic, non-book entries mixed into the same
+  // timeline — capped deliberately low (at most 1 pages-this-month leader, 1
+  // pages-this-year leader, 2 recent club-goal completions) so they read as
+  // occasional highlights rather than flooding the feed with recap noise.
+  const synthetic = [];
+  const today = new Date().toISOString().slice(0, 10);
+  const profileById = new Map(rows.map(r => [r.user_id, r]));
+  // rows might not cover every contact (someone with no leido/leyendo books
+  // wouldn't appear above) — fetch names/avatars for anyone missing so a
+  // pages-milestone can still credit them correctly.
+  const missingProfileIds = contactIds.filter(id => !profileById.has(id));
+  if (missingProfileIds.length) {
+    const extra = await db.all(
+      `SELECT id as user_id, name as user_name, username, avatar_seed FROM profiles WHERE id IN (${missingProfileIds.map(() => '?').join(',')})`,
+      missingProfileIds
+    );
+    for (const p of extra) profileById.set(p.user_id, p);
+  }
+
+  const contactStats = await computeUserBookStats(contactIds);
+  const topBy = (field) => {
+    let best = null;
+    for (const [userId, s] of contactStats) {
+      if (s[field] > 0 && (!best || s[field] > best.value)) best = { userId, value: s[field] };
+    }
+    return best;
+  };
+  const topMonth = topBy('pages_this_month');
+  if (topMonth) {
+    const p = profileById.get(topMonth.userId);
+    if (p) synthetic.push({
+      kind: 'pages_month', event_date: today, user_id: topMonth.userId,
+      user_name: p.user_name, username: p.username, avatar_seed: p.avatar_seed, pages: topMonth.value
+    });
+  }
+  const topYear = topBy('pages_this_year');
+  if (topYear && topYear.userId !== topMonth?.userId) {
+    const p = profileById.get(topYear.userId);
+    if (p) synthetic.push({
+      kind: 'pages_year', event_date: today, user_id: topYear.userId,
+      user_name: p.user_name, username: p.username, avatar_seed: p.avatar_seed, pages: topYear.value
+    });
+  }
+
+  // Recent club-goal completions by other members of clubs you're in
+  // (not your own completions — this is about seeing others' progress).
+  const myClubIds = (await db.all('SELECT club_id FROM club_members WHERE user_id = ?', [req.userId])).map(r => r.club_id);
+  if (myClubIds.length) {
+    const cph = myClubIds.map(() => '?').join(',');
+    const clubGoalRows = await db.all(`
+      SELECT cgp.completed_at, p.id as user_id, p.name as user_name, p.username, p.avatar_seed,
+             bc.name as club_name, cg.description as goal_description
+      FROM club_goal_progress cgp
+      JOIN club_goals cg ON cg.id = cgp.goal_id
+      JOIN book_clubs bc ON bc.id = cg.club_id
+      JOIN profiles p ON p.id = cgp.user_id
+      WHERE cg.club_id IN (${cph}) AND cgp.user_id != ? AND cgp.completed_at > now() - interval '7 days'
+      ORDER BY cgp.completed_at DESC
+      LIMIT 2
+    `, [...myClubIds, req.userId]);
+    for (const r of clubGoalRows) {
+      synthetic.push({
+        kind: 'club_goal', event_date: r.completed_at.toISOString ? r.completed_at.toISOString().slice(0, 10) : today,
+        user_id: r.user_id, user_name: r.user_name, username: r.username, avatar_seed: r.avatar_seed,
+        club_name: r.club_name, goal_description: r.goal_description
+      });
+    }
+  }
+
+  const combined = [...updateRows, ...synthetic].sort((a, b) => (a.event_date < b.event_date ? 1 : a.event_date > b.event_date ? -1 : 0));
+  res.json(combined);
 });
 
 // A reactor may react to their own activity or to a contact's — the
@@ -1444,37 +1519,59 @@ app.post('/api/feed/:userBookId/react', async (req, res) => {
 // You + your accepted contacts, ranked by books finished this month/year and
 // total pages (finished books in full, in-progress books proportional to
 // their current progress — same formula computeStats uses for the Home
-// pages stat, kept in sync here). One query covering every relevant user at
-// once rather than N calls, since the contact list is small.
-app.get('/api/leaderboard', async (req, res) => {
-  const contactRows = await db.all(`SELECT contact_user_id FROM contacts WHERE user_id = ? AND status = 'aceptado'`, [req.userId]);
-  const userIds = [req.userId, ...contactRows.map(r => r.contact_user_id)];
+// pages stat, kept in sync here). Shared by /api/leaderboard and the
+// pages-milestone entries synthesized into /api/feed below, so both stay
+// consistent with a single implementation.
+async function computeUserBookStats(userIds) {
+  if (!userIds.length) return new Map();
   const placeholders = userIds.map(() => '?').join(',');
-
-  const [profiles, rows] = await Promise.all([
-    db.all(`SELECT id, name, username, avatar_seed FROM profiles WHERE id IN (${placeholders})`, userIds),
-    db.all(`
-      SELECT ub.user_id, ub.status, ub.end_date, ub.progress_percent, b.pages
-      FROM user_books ub JOIN books b ON b.id = ub.book_id
-      WHERE ub.user_id IN (${placeholders})
-    `, userIds)
-  ]);
+  const rows = await db.all(`
+    SELECT ub.user_id, ub.status, ub.end_date, ub.progress_percent, b.pages
+    FROM user_books ub JOIN books b ON b.id = ub.book_id
+    WHERE ub.user_id IN (${placeholders})
+  `, userIds);
 
   const anioActual = new Date().getFullYear();
   const claveMesActual = `${anioActual}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
 
-  const stats = new Map(userIds.map(id => [id, { books_this_month: 0, books_this_year: 0, total_pages: 0 }]));
+  const stats = new Map(userIds.map(id => [id, {
+    books_this_month: 0, books_this_year: 0, total_pages: 0, pages_this_month: 0, pages_this_year: 0
+  }]));
   for (const r of rows) {
     const s = stats.get(r.user_id);
     if (!s) continue;
     if (r.status === 'leido') {
       s.total_pages += r.pages || 0;
-      if (r.end_date && r.end_date.startsWith(String(anioActual))) s.books_this_year++;
-      if (r.end_date && r.end_date.slice(0, 7) === claveMesActual) s.books_this_month++;
+      if (r.end_date && r.end_date.startsWith(String(anioActual))) {
+        s.books_this_year++;
+        s.pages_this_year += r.pages || 0;
+      }
+      if (r.end_date && r.end_date.slice(0, 7) === claveMesActual) {
+        s.books_this_month++;
+        s.pages_this_month += r.pages || 0;
+      }
     } else if (r.status === 'leyendo' && r.pages && r.progress_percent > 0) {
-      s.total_pages += Math.round((r.pages * r.progress_percent) / 100);
+      const partial = Math.round((r.pages * r.progress_percent) / 100);
+      s.total_pages += partial;
+      // An in-progress book counts toward "pages this month/year" too — it's
+      // being read right now, which falls within both current periods.
+      s.pages_this_month += partial;
+      s.pages_this_year += partial;
     }
   }
+  return stats;
+}
+
+// One query covering every relevant user at once rather than N calls, since
+// the contact list is small.
+app.get('/api/leaderboard', async (req, res) => {
+  const contactRows = await db.all(`SELECT contact_user_id FROM contacts WHERE user_id = ? AND status = 'aceptado'`, [req.userId]);
+  const userIds = [req.userId, ...contactRows.map(r => r.contact_user_id)];
+
+  const [profiles, stats] = await Promise.all([
+    db.all(`SELECT id, name, username, avatar_seed FROM profiles WHERE id IN (${userIds.map(() => '?').join(',')})`, userIds),
+    computeUserBookStats(userIds)
+  ]);
 
   const profileMap = new Map(profiles.map(p => [p.id, p]));
   const leaderboard = userIds
@@ -1571,6 +1668,45 @@ app.get('/api/clubs', async (req, res) => {
     ORDER BY bc.created_at DESC
   `, [req.userId]);
   res.json(rows);
+});
+
+// Lightweight per-club goal summary (latest goal only, per club) for the
+// Social highlights strip — whether the viewer has completed this week's
+// goal yet, and who else in the club still hasn't. Separate from the full
+// GET /api/clubs/:id (which loads every goal in history) since the
+// highlights strip only ever needs "what's the current status right now".
+app.get('/api/clubs/active-goals', async (req, res) => {
+  const myClubs = await db.all(`
+    SELECT bc.id, bc.name FROM club_members cm JOIN book_clubs bc ON bc.id = cm.club_id WHERE cm.user_id = ?
+  `, [req.userId]);
+
+  const results = [];
+  for (const club of myClubs) {
+    const goal = await db.get(
+      `SELECT * FROM club_goals WHERE club_id = ? ORDER BY week_start DESC, created_at DESC LIMIT 1`,
+      [club.id]
+    );
+    if (!goal) continue;
+
+    const members = await db.all(
+      `SELECT u.id, u.name FROM club_members cm JOIN profiles u ON u.id = cm.user_id WHERE cm.club_id = ?`,
+      [club.id]
+    );
+    const progress = await db.all('SELECT user_id FROM club_goal_progress WHERE goal_id = ?', [goal.id]);
+    const completedIds = new Set(progress.map(p => p.user_id));
+
+    results.push({
+      club_id: club.id,
+      club_name: club.name,
+      goal_id: goal.id,
+      goal_description: goal.description,
+      total_members: members.length,
+      completed_count: completedIds.size,
+      pending_names: members.filter(m => !completedIds.has(m.id)).map(m => m.name),
+      my_completed: completedIds.has(req.userId)
+    });
+  }
+  res.json({ clubs: results });
 });
 
 app.post('/api/clubs/:id/join', async (req, res) => {

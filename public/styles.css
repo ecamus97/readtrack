@@ -188,6 +188,11 @@ nav button.active {
 }
 .nav-icon { margin-right: 6px; }
 
+/* ---------- Minimalist icon set (replaces most emoji) ---------- */
+.icon { width: 17px; height: 17px; vertical-align: -3px; flex-shrink: 0; display: inline-block; }
+.icon-lg { width: 22px; height: 22px; }
+.icon-sm { width: 14px; height: 14px; }
+
 main { padding: 28px 32px 80px; max-width: 1080px; margin: 0 auto; }
 .hidden { display: none !important; }
 
@@ -324,7 +329,12 @@ select {
   flex-shrink: 0;
 }
 .cover-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.cover-wrap .placeholder { font-size: 2rem; }
+.cover-wrap .placeholder { font-size: 2rem; display: flex; align-items: center; justify-content: center; }
+/* Sized in `em` so it automatically matches whatever font-size each
+   differently-sized cover-wrap context sets on .placeholder (grid cards,
+   feed covers, calendar bars, etc.) without needing a bespoke icon class
+   per context. */
+.placeholder svg.icon { width: 1em; height: 1em; }
 .card h3 { margin: 2px 0 0; font-size: 0.95rem; line-height: 1.3; }
 .card p { margin: 0; font-size: 0.8rem; color: var(--muted); }
 .card .meta-row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -373,7 +383,8 @@ select {
   padding: 10px 18px 10px 14px;
   box-shadow: var(--shadow);
 }
-.stat-pill .pill-icon { font-size: 1.4rem; }
+.stat-pill .pill-icon { font-size: 1.4rem; display: inline-flex; }
+.stat-pill .pill-icon .icon { width: 1.3rem; height: 1.3rem; color: var(--primary); }
 .stat-pill .pill-number { font-size: 1.15rem; font-weight: 700; font-family: "Fraunces", serif; line-height: 1.1; }
 .stat-pill .pill-label { font-size: 0.72rem; color: var(--muted); }
 
@@ -462,7 +473,8 @@ select {
   color: white;
   box-shadow: var(--shadow);
 }
-.streak-flame { font-size: 2.1rem; line-height: 1; }
+.streak-flame { font-size: 2.1rem; line-height: 1; display: inline-flex; }
+.streak-flame .icon { width: 2rem; height: 2rem; }
 .streak-count { font-size: 1.3rem; font-weight: 700; font-family: "Fraunces", serif; }
 .streak-caption { font-size: 0.85rem; color: rgba(255,255,255,0.85); margin-top: 2px; }
 
@@ -548,6 +560,19 @@ select {
    fighting the border-left accent already in place. */
 .feed-card-leido { border-left-color: var(--primary); background: linear-gradient(90deg, var(--primary-light) 0%, var(--card) 12%); }
 .feed-card-leyendo { border-left-color: var(--gold); background: linear-gradient(90deg, #fbf1dd 0%, var(--card) 12%); }
+.feed-card-milestone { border-left-color: var(--accent); }
+.feed-milestone-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  background: var(--primary-light);
+  flex-shrink: 0;
+}
+.feed-milestone-icon-club { background: var(--accent-light); }
 .feed-avatar { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; border: 1px solid var(--border); }
 .feed-cover.cover-wrap { width: 54px; height: 78px; border-radius: 6px; flex-shrink: 0; }
 .feed-cover .placeholder { font-size: 1.5rem; }
@@ -569,16 +594,19 @@ select {
   scrollbar-width: none;
 }
 .social-highlights::-webkit-scrollbar { display: none; }
+/* Wide horizontal rectangles (icon on the left, two lines of text on the
+   right) rather than narrow vertical "story" bubbles — reads more like a
+   row of quick-glance cards you scroll through than an Instagram-stories
+   strip, per feedback that the taller narrow tiles felt cramped. */
 .highlight-tile {
   flex: 0 0 auto;
-  width: 92px;
+  width: 210px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  text-align: center;
-  gap: 4px;
+  gap: 10px;
+  text-align: left;
   cursor: pointer;
-  padding: 12px 6px 10px;
+  padding: 12px 14px;
   border-radius: 14px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -586,26 +614,47 @@ select {
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 .highlight-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
-.highlight-emoji { font-size: 1.6rem; line-height: 1; }
-.highlight-title { font-size: 0.78rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 82px; }
-.highlight-sub { font-size: 0.68rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 82px; }
-.highlight-tile-streak { background: linear-gradient(135deg, var(--gold), #b9791f); border: none; }
-.highlight-tile-streak .highlight-title, .highlight-tile-streak .highlight-sub { color: white; }
-.highlight-tile-rank { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); border: none; }
-.highlight-tile-rank .highlight-title, .highlight-tile-rank .highlight-sub { color: white; }
-.highlight-avatar-wrap { position: relative; width: 46px; height: 46px; margin-bottom: 2px; }
-.highlight-avatar { width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--border); object-fit: cover; }
+.highlight-icon-badge {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+  background: var(--primary-light);
+}
+.highlight-icon-badge .icon { width: 18px; height: 18px; }
+.highlight-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.highlight-title { font-size: 0.85rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.highlight-sub { font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Soft, translucent tints per kind — same visual language as the
+   feed-card-leido/leyendo tint below, rather than the solid saturated
+   gradients used at first, which read as too heavy next to the feed. */
+.highlight-tile-streak { background: linear-gradient(90deg, #fbf1dd 0%, var(--card) 85%); border-color: #eddcb0; }
+.highlight-tile-streak .highlight-icon-badge { background: rgba(217, 164, 65, 0.25); }
+.highlight-tile-rank { background: linear-gradient(90deg, var(--primary-light) 0%, var(--card) 85%); border-color: #cfe3db; }
+.highlight-tile-rank .highlight-icon-badge { background: rgba(47, 111, 98, 0.18); }
+.highlight-tile-club { background: linear-gradient(90deg, var(--accent-light) 0%, var(--card) 85%); border-color: #f3d2c2; }
+.highlight-tile-club .highlight-icon-badge { background: rgba(226, 96, 63, 0.18); }
+
+.highlight-avatar-wrap { position: relative; width: 38px; height: 38px; flex-shrink: 0; }
+.highlight-avatar { width: 38px; height: 38px; border-radius: 50%; border: 2px solid var(--border); object-fit: cover; }
 .highlight-badge {
   position: absolute;
   bottom: -3px;
   right: -3px;
   background: var(--card);
   border-radius: 50%;
-  font-size: 0.68rem;
-  padding: 2px 3px;
+  font-size: 0.62rem;
+  padding: 3px;
+  display: flex;
   border: 1px solid var(--border);
   line-height: 1;
 }
+.highlight-badge .icon { width: 10px; height: 10px; }
 
 .feed-progress-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; max-width: 220px; }
 .feed-progress-bar { flex: 1; height: 6px; margin-top: 0; background: var(--border); }
@@ -646,6 +695,23 @@ select {
 }
 .leaderboard-row-me { border-color: var(--primary); background: var(--primary-light); }
 .leaderboard-rank { width: 28px; text-align: center; font-weight: 700; font-size: 1rem; flex-shrink: 0; }
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.highlight-tile-rank .rank-badge { width: 38px; height: 38px; font-size: 1rem; }
+.rank-badge-gold { background: #f0c14b; color: #6b4a00; }
+.rank-badge-silver { background: #d6d9dd; color: #4a4d51; }
+.rank-badge-bronze { background: #d79a6a; color: #5a340f; }
 .leaderboard-name { flex: 1; font-weight: 600; }
 .leaderboard-value { font-size: 0.85rem; color: var(--muted); font-weight: 700; }
 .leaderboard-row-me .leaderboard-value { color: var(--primary-dark); }
@@ -893,7 +959,8 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
   transition: box-shadow 0.15s ease;
 }
 .club-row:hover { box-shadow: var(--shadow); }
-.club-row-icon { font-size: 1.6rem; flex-shrink: 0; }
+.club-row-icon { flex-shrink: 0; display: flex; color: var(--primary); }
+.club-row-icon .icon { width: 24px; height: 24px; }
 .club-row-body { flex: 1; min-width: 0; }
 .club-row-name { margin: 0; font-weight: 700; }
 .club-row-meta { margin: 2px 0 0; font-size: 0.8rem; color: var(--muted); }
@@ -1130,6 +1197,9 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
   position: absolute;
   top: 6px;
   right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   background: rgba(0,0,0,0.72);
   color: white;
   font-size: 0.72rem;

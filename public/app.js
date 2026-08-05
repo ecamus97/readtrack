@@ -64,6 +64,54 @@ function avatarUrl(value) {
   return `https://api.dicebear.com/7.x/${style}/svg?seed=${encodeURIComponent(seed)}&radius=50`;
 }
 
+// ---------- Minimalist icon set ----------
+// Small hand-drawn line icons (24x24, stroke=currentColor) replacing emoji
+// throughout the interface's "chrome" (nav, buttons, pills, badges) for a
+// calmer, more consistent look. Deliberately NOT used for: the reaction
+// picker (❤️👏🔥😮 stay as real emoji, by request) or achievement badges
+// (kept as varied emoji on purpose — a generic icon set would make very
+// different achievements look identical).
+const ICONS = {
+  home: '<path d="M4 11L12 4l8 7"/><path d="M6 10v9h5v-5h2v5h5v-9"/>',
+  book: '<path d="M4 5c2-1 5-1 7 0v14c-2-1-5-1-7 0V5z"/><path d="M20 5c-2-1-5-1-7 0v14c2-1 5-1 7 0V5z"/>',
+  'book-open': '<path d="M12 6c-2-1.2-5-1.2-8 0v13c3-1.2 6-1.2 8 0 2-1.2 5-1.2 8 0V6c-3-1.2-6-1.2-8 0z"/><line x1="12" y1="6" x2="12" y2="19"/>',
+  search: '<circle cx="10" cy="10" r="6"/><line x1="21" y1="21" x2="14.5" y2="14.5"/>',
+  users: '<circle cx="9" cy="8" r="3"/><path d="M3 20c0-4 3-6 6-6s6 2 6 6"/><circle cx="17" cy="9" r="2.3"/><path d="M15 20c0-2.5 1.5-4.5 4-5"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.5 3.5-7 8-7s8 2.5 8 7"/>',
+  list: '<line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/>',
+  'chevron-left': '<polyline points="15 6 9 12 15 18"/>',
+  'chevron-right': '<polyline points="9 6 15 12 9 18"/>',
+  'refresh-cw': '<path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><polyline points="3 6 12 13 21 6"/>',
+  key: '<circle cx="8" cy="15" r="3"/><path d="M10.5 12.5L20 3"/><path d="M16.5 7l2.5 2.5"/><path d="M14 9.5l2 2"/>',
+  'check-circle': '<circle cx="12" cy="12" r="9"/><polyline points="8 12 11 15 16 9"/>',
+  circle: '<circle cx="12" cy="12" r="9"/>',
+  bookmark: '<path d="M6 3h12v18l-6-4-6 4V3z"/>',
+  flame: '<path d="M12 2c1 3-3 4-3 8a3 3 0 0 0 6 0c0-1-1-2-1-3 2 1 4 4 4 7a6 6 0 0 1-12 0c0-5 4-7 6-12z"/>',
+  star: '<polygon points="12 2 15 9 22 9.5 16.5 14 18 21 12 17.3 6 21 7.5 14 2 9.5 9 9 12 2"/>',
+  'trending-up': '<polyline points="3 17 9 11 13 15 21 6"/><polyline points="15 6 21 6 21 12"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/>',
+  folder: '<path d="M3 6h6l2 2h10v11H3V6z"/>',
+  'file-text': '<path d="M7 3h7l5 5v13H7V3z"/><line x1="9" y1="12" x2="17" y2="12"/><line x1="9" y1="16" x2="17" y2="16"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/>'
+};
+
+// fill: pass true for icons meant to render solid (e.g. a filled rating
+// star) instead of outline-only.
+function icon(name, cls, fill) {
+  const body = ICONS[name] || '';
+  return `<svg class="icon ${cls || ''}" viewBox="0 0 24 24" fill="${fill ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+}
+
+// A 1-5 star rating, rendered as filled + outline star icons rather than
+// repeating a "⭐" emoji character.
+function starsHtml(n, cls) {
+  let html = '<span class="stars-display">';
+  for (let i = 1; i <= 5; i++) html += icon('star', cls || 'icon-sm', i <= n);
+  return html + '</span>';
+}
+
 function avatarPickerHtml(selected, inputId) {
   const initial = selected || avatarValue(AVATAR_OPTIONS[0]);
   return `
@@ -490,9 +538,11 @@ document.getElementById('recommendedRefreshBtn').onclick = () => loadRecommended
 document.getElementById('friendsRecRefreshBtn').onclick = () => loadFriendsRecommended();
 
 function bookCoverHtml(cover_url) {
-  return cover_url
-    ? `<img src="${cover_url}" onerror="this.parentElement.innerHTML='<span class=\\'placeholder\\'>📕</span>'" />`
-    : `<span class="placeholder">📕</span>`;
+  // Fallback is a sibling <span>, not an onerror-injected innerHTML string —
+  // the icon SVG's own double-quoted attributes would otherwise collide
+  // with (and truncate) a double-quoted onerror="..." attribute.
+  if (!cover_url) return `<span class="placeholder">${icon('book')}</span>`;
+  return `<img src="${cover_url}" onerror="this.style.display='none'; this.nextElementSibling.classList.remove('hidden')" /><span class="placeholder hidden">${icon('book')}</span>`;
 }
 
 // Cover-only card: just the cover art, nothing else. Title/author and all
@@ -503,7 +553,7 @@ function renderBookGrid(books, source) {
     <div class="card book-card-cover-only clickable" onclick="showBookPreview(${i}, '${source}')" title="${escapeHtml(b.title)}">
       <div class="cover-wrap">
         ${bookCoverHtml(b.cover_url)}
-        ${b.avg_rating ? `<span class="rating-badge">⭐ ${b.avg_rating}</span>` : ''}
+        ${b.avg_rating ? `<span class="rating-badge">${icon('star', 'icon-sm', true)} ${b.avg_rating}</span>` : ''}
       </div>
     </div>
   `).join('') || '<p class="empty-state">No results. Try another search term.</p>';
@@ -576,7 +626,7 @@ function showBookPreview(index, source) {
       <li><span>Publication year</span><strong>${b.published_year || '—'}</strong></li>
       <li><span>Pages</span><strong>${b.pages || '—'}</strong></li>
       <li><span>Categories</span><strong>${escapeHtml(b.categories) || '—'}</strong></li>
-      ${b.recommended_by ? `<li><span>Loved by</span><strong>⭐ ${b.avg_rating} · ${escapeHtml(b.recommended_by.join(', '))}</strong></li>` : ''}
+      ${b.recommended_by ? `<li><span>Loved by</span><strong>${icon('star', 'icon-sm', true)} ${b.avg_rating} · ${escapeHtml(b.recommended_by.join(', '))}</strong></li>` : ''}
     </ul>
     ${descriptionBlockHtml(b)}
     <div class="modal-actions">
@@ -704,7 +754,7 @@ async function loadRecommended() {
 }
 
 // Separate from loadRecommended() above — this one is "books your contacts
-// personally loved" (rated 4-5⭐) rather than "books that match your own
+// personally loved" (rated 4-5 stars) rather than "books that match your own
 // genre/year history". Hidden entirely (not just an empty state) when the
 // person has no accepted contacts yet, since there's nothing meaningful to
 // show or explain in that case.
@@ -717,7 +767,7 @@ async function loadFriendsRecommended() {
     if (!data.hasContacts) { section.classList.add('hidden'); return; }
     section.classList.remove('hidden');
     if (!data.books.length) {
-      container.innerHTML = '<p class="empty-state">No standout picks from your contacts yet — once they rate books 4-5⭐, they\'ll show up here.</p>';
+      container.innerHTML = '<p class="empty-state">No standout picks from your contacts yet — once they rate books 4-5 stars, they\'ll show up here.</p>';
       return;
     }
     window.__friendsRecCache = data.books;
@@ -918,12 +968,12 @@ function renderBookDetail(b, refreshing) {
       <li><span>Publication year</span><strong>${b.published_year || '—'}</strong></li>
       <li><span>Pages</span><strong>${refreshing ? '...' : (b.pages || '—')}</strong></li>
       <li><span>Categories</span><strong>${refreshing ? '...' : (escapeHtml(b.categories) || '—')}</strong></li>
-      <li><span>Rating</span><strong>${b.rating ? '⭐'.repeat(b.rating) : '—'}</strong></li>
+      <li><span>Rating</span><strong>${b.rating ? starsHtml(b.rating) : '—'}</strong></li>
       <li><span>Start date</span><strong>${b.start_date || '—'}</strong></li>
       <li><span>Finish date</span><strong>${b.end_date || '—'}</strong></li>
     </ul>
     ${descriptionBlockHtml(b)}
-    ${missingData ? `<button class="secondary" style="width:100%;margin-bottom:10px" ${refreshing ? 'disabled' : ''} onclick="refreshBookData(${b.book_id})">${refreshing ? 'Searching...' : '🔄 Look up missing pages/categories'}</button>` : ''}
+    ${missingData ? `<button class="secondary" style="width:100%;margin-bottom:10px" ${refreshing ? 'disabled' : ''} onclick="refreshBookData(${b.book_id})">${refreshing ? 'Searching...' : icon('refresh-cw', 'icon-sm') + ' Look up missing pages/categories'}</button>` : ''}
     <div class="modal-actions">
       <button class="danger" onclick="closeModal(); confirmDeleteBook(${b.id})">Delete</button>
       <button class="secondary" onclick="closeModal()">Close</button>
@@ -1050,7 +1100,7 @@ function renderLibraryCalendar() {
 
   const unscheduledContainer = document.getElementById('unscheduledBooks');
   unscheduledContainer.innerHTML = unscheduled.length ? `
-    <h4 class="section-label" style="margin-top:0">📌 Not scheduled yet</h4>
+    <h4 class="section-label" style="margin-top:0">${icon('bookmark', 'icon-sm')} Not scheduled yet</h4>
     <div class="unscheduled-list">
       ${unscheduled.map(b => `
         <div class="unscheduled-item">
@@ -1239,7 +1289,7 @@ async function loadDashboard() {
           <div class="reading-now-card">
             <div class="cover-wrap reading-now-cover clickable" onclick="openReadingNowDetail(${b.id})" title="${escapeHtml(b.title)}">${bookCoverHtml(b.cover_url)}</div>
             <div class="reading-now-body">
-              <span class="status-badge ${b.club_name ? 'leyendo' : 'por_leer'}">${b.club_name ? `📚 ${escapeHtml(b.club_name)}` : '👤 Individual'}</span>
+              <span class="status-badge ${b.club_name ? 'leyendo' : 'por_leer'}">${b.club_name ? `${icon('book', 'icon-sm')} ${escapeHtml(b.club_name)}` : icon('user', 'icon-sm') + ' Individual'}</span>
               <div class="reading-progress-row">
                 <div class="progress-bar reading-progress-bar"><div class="progress-bar-fill" style="width:${b.progress_percent || 0}%"></div></div>
                 <span class="reading-progress-pct">${b.progress_percent || 0}%</span>
@@ -1254,7 +1304,7 @@ async function loadDashboard() {
     ${stats.racha_actual > 0 ? `
     <div class="dash-section">
       <div class="streak-banner">
-        <span class="streak-flame">🔥</span>
+        <span class="streak-flame">${icon('flame', 'icon-lg')}</span>
         <div>
           <div class="streak-count">${stats.racha_actual} day${stats.racha_actual === 1 ? '' : 's'} streak</div>
           <div class="streak-caption">Update your progress today to keep it going</div>
@@ -1282,12 +1332,12 @@ async function loadDashboard() {
       <div>
         <h4 class="section-label" style="margin-top:0">At a glance</h4>
         <div class="pill-row">
-          <div class="stat-pill"><span class="pill-icon">📚</span><div><div class="pill-number">${stats.total_leidos}</div><div class="pill-label">books read</div></div></div>
-          <div class="stat-pill"><span class="pill-icon">📄</span><div><div class="pill-number">${stats.total_paginas.toLocaleString('en')}</div><div class="pill-label">pages read</div></div></div>
-          <div class="stat-pill"><span class="pill-icon">⭐</span><div><div class="pill-number">${stats.rating_promedio ?? '—'}</div><div class="pill-label">avg rating</div></div></div>
-          <div class="stat-pill"><span class="pill-icon">📖</span><div><div class="pill-number">${stats.total_leyendo}</div><div class="pill-label">reading now</div></div></div>
-          <div class="stat-pill"><span class="pill-icon">🗂️</span><div><div class="pill-number">${stats.total_por_leer}</div><div class="pill-label">to read</div></div></div>
-          ${stats.dias_promedio_por_libro != null ? `<div class="stat-pill"><span class="pill-icon">⏱️</span><div><div class="pill-number">${stats.dias_promedio_por_libro}</div><div class="pill-label">avg days/book</div></div></div>` : ''}
+          <div class="stat-pill"><span class="pill-icon">${icon('book')}</span><div><div class="pill-number">${stats.total_leidos}</div><div class="pill-label">books read</div></div></div>
+          <div class="stat-pill"><span class="pill-icon">${icon('file-text')}</span><div><div class="pill-number">${stats.total_paginas.toLocaleString('en')}</div><div class="pill-label">pages read</div></div></div>
+          <div class="stat-pill"><span class="pill-icon">${icon('star', '', true)}</span><div><div class="pill-number">${stats.rating_promedio ?? '—'}</div><div class="pill-label">avg rating</div></div></div>
+          <div class="stat-pill"><span class="pill-icon">${icon('book-open')}</span><div><div class="pill-number">${stats.total_leyendo}</div><div class="pill-label">reading now</div></div></div>
+          <div class="stat-pill"><span class="pill-icon">${icon('folder')}</span><div><div class="pill-number">${stats.total_por_leer}</div><div class="pill-label">to read</div></div></div>
+          ${stats.dias_promedio_por_libro != null ? `<div class="stat-pill"><span class="pill-icon">${icon('clock')}</span><div><div class="pill-number">${stats.dias_promedio_por_libro}</div><div class="pill-label">avg days/book</div></div></div>` : ''}
         </div>
       </div>
       <div>
@@ -1476,7 +1526,7 @@ async function confirmProgressUpdate(userBookId) {
       body: JSON.stringify({ progress_percent: value })
     });
     closeModal();
-    showToast(result.autoCompleted ? 'Nice! Marked as read 🎉' : 'Progress updated');
+    showToast(result.autoCompleted ? 'Nice! Marked as read' : 'Progress updated');
     loadDashboard();
   } catch (e) {
     showToast(e.message);
@@ -1517,26 +1567,30 @@ async function loadLeaderboard() {
   }
 }
 
+// Numbered circle badges (gold/silver/bronze for the top 3) instead of medal
+// emoji — keeps the "1st/2nd/3rd feels special" distinction without emoji.
 function rankMedal(i) {
-  return ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
+  const cls = ['rank-badge-gold', 'rank-badge-silver', 'rank-badge-bronze'][i] || '';
+  return `<span class="rank-badge ${cls}">${i + 1}</span>`;
 }
 
 // The full ranking now lives in a modal (opened from the "Ranking" highlight
 // tile) instead of its own Social sub-tab — re-invokes itself on each metric
 // chip click to switch views without closing/reopening the modal.
 function openLeaderboardModal(metric) {
-  const activeMetric = metric || 'books_this_month';
+  const activeMetric = metric || featuredRankingMetric().metric;
   const rows = window.__leaderboardCache || [];
-  const metricLabel = activeMetric === 'total_pages' ? 'pages' : 'books';
+  const metricLabel = activeMetric.includes('pages') ? 'pages' : 'books';
   const sorted = [...rows].sort((a, b) => (b[activeMetric] || 0) - (a[activeMetric] || 0));
   const metricBtn = (key, label) =>
     `<button class="chip ${activeMetric === key ? 'active' : ''}" onclick="openLeaderboardModal('${key}')">${label}</button>`;
   openModal(`
     <h3>Ranking</h3>
     <div class="filter-tabs" style="margin-bottom:14px">
-      ${metricBtn('books_this_month', 'This month')}
-      ${metricBtn('books_this_year', 'This year')}
       ${metricBtn('total_pages', 'Total pages')}
+      ${metricBtn('books_this_year', 'Books this year')}
+      ${metricBtn('books_this_month', 'Books this month')}
+      ${metricBtn('pages_this_month', 'Pages this month')}
     </div>
     ${rows.length <= 1
       ? '<p class="empty-state">Add contacts to see how you compare.</p>'
@@ -1569,28 +1623,60 @@ async function renderSocialHighlights() {
     streak = stats.racha_actual || 0;
   } catch (e) { /* streak tile just won't show */ }
 
+  let clubs = [];
+  try {
+    const data = await api('/api/clubs/active-goals');
+    clubs = data.clubs || [];
+  } catch (e) { /* club tiles just won't show */ }
+
   const leaderboard = window.__leaderboardCache || [];
-  const feedRows = window.__feedCache || [];
+  const feedRows = (window.__feedCache || []).filter(r => r.kind === 'update');
   const tiles = [];
 
   if (streak > 0) {
     tiles.push(`
       <div class="highlight-tile highlight-tile-streak" onclick="showView('dashboard')">
-        <span class="highlight-emoji">🔥</span>
-        <span class="highlight-title">${streak} day${streak === 1 ? '' : 's'}</span>
-        <span class="highlight-sub">Your streak</span>
+        <span class="highlight-icon-badge">${icon('flame')}</span>
+        <div class="highlight-text">
+          <span class="highlight-title">${streak} day${streak === 1 ? '' : 's'} streak</span>
+          <span class="highlight-sub">Keep your momentum going</span>
+        </div>
       </div>
     `);
   }
 
   if (leaderboard.length > 1) {
-    const sortedByMonth = [...leaderboard].sort((a, b) => (b.books_this_month || 0) - (a.books_this_month || 0));
-    const myRank = sortedByMonth.findIndex(r => r.is_me) + 1;
+    const featured = featuredRankingMetric();
+    const sorted = [...leaderboard].sort((a, b) => (b[featured.metric] || 0) - (a[featured.metric] || 0));
+    const myRank = sorted.findIndex(r => r.is_me) + 1;
+    const me = sorted.find(r => r.is_me);
     tiles.push(`
       <div class="highlight-tile highlight-tile-rank" onclick="openLeaderboardModal()">
-        <span class="highlight-emoji">${rankMedal(myRank - 1)}</span>
-        <span class="highlight-title">#${myRank} this month</span>
-        <span class="highlight-sub">See ranking</span>
+        ${rankMedal(myRank - 1)}
+        <div class="highlight-text">
+          <span class="highlight-title">#${myRank} in ${featured.label}</span>
+          <span class="highlight-sub">${(me?.[featured.metric] || 0).toLocaleString('en')} so far · See full ranking</span>
+        </div>
+      </div>
+    `);
+  }
+
+  // One tile per active club with a weekly goal — whether you're done, and
+  // who's still pending, so this doubles as a nudge to catch up or to check
+  // in on a slower member.
+  for (const club of clubs) {
+    const pending = club.pending_names || [];
+    let sub;
+    if (!club.my_completed) sub = `Weekly goal pending: ${escapeHtml(club.goal_description)}`;
+    else if (club.completed_count >= club.total_members) sub = `Everyone finished this week's goal`;
+    else sub = `Waiting on ${pending.slice(0, 2).map(escapeHtml).join(', ')}${pending.length > 2 ? ` +${pending.length - 2}` : ''}`;
+    tiles.push(`
+      <div class="highlight-tile highlight-tile-club" onclick="openClubDetail(${club.club_id})">
+        <span class="highlight-icon-badge">${icon('book')}</span>
+        <div class="highlight-text">
+          <span class="highlight-title">${escapeHtml(club.club_name)}</span>
+          <span class="highlight-sub">${sub}</span>
+        </div>
       </div>
     `);
   }
@@ -1602,21 +1688,45 @@ async function renderSocialHighlights() {
   for (const r of feedRows) {
     if (seenUsers.has(r.user_id) || seenUsers.size >= 8) continue;
     seenUsers.add(r.user_id);
-    const icon = r.status === 'leido' ? '✅' : '📖';
+    const statusIcon = r.status === 'leido' ? icon('check-circle', 'icon-sm') : icon('book-open', 'icon-sm');
     tiles.push(`
-      <div class="highlight-tile highlight-tile-contact" onclick="showBookPreview(${r.__feedIndex}, 'feed')" title="${escapeHtml(r.title)}">
+      <div class="highlight-tile highlight-tile-contact" onclick="showBookPreview(${r.__feedIndex}, 'feed')">
         <div class="highlight-avatar-wrap">
           <img class="highlight-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.user_name)}" alt="">
-          <span class="highlight-badge">${icon}</span>
+          <span class="highlight-badge">${statusIcon}</span>
         </div>
-        <span class="highlight-title">${escapeHtml((r.user_name || '').split(' ')[0])}</span>
-        <span class="highlight-sub">${escapeHtml(r.title)}</span>
+        <div class="highlight-text">
+          <span class="highlight-title">${escapeHtml((r.user_name || '').split(' ')[0])}</span>
+          <span class="highlight-sub">${escapeHtml(r.title)}</span>
+        </div>
       </div>
     `);
   }
 
   strip.innerHTML = tiles.join('');
   strip.classList.toggle('hidden', !tiles.length);
+}
+
+// Which leaderboard metric gets the spotlight on the ranking highlight tile
+// rotates weekly (by ISO week number) rather than always defaulting to the
+// same one, so the highlight stays a little fresh over time.
+const RANKING_ROTATION = [
+  { metric: 'total_pages', label: 'total pages' },
+  { metric: 'books_this_year', label: 'books this year' },
+  { metric: 'books_this_month', label: 'books this month' },
+  { metric: 'pages_this_month', label: 'pages this month' }
+];
+
+function isoWeekNumber(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+function featuredRankingMetric() {
+  return RANKING_ROTATION[isoWeekNumber(new Date()) % RANKING_ROTATION.length];
 }
 
 function timeAgo(dateStr) {
@@ -1653,9 +1763,6 @@ async function loadFeed() {
   window.__feedCache = rows;
   rows.forEach((r, i) => { r.__feedIndex = i; });
 
-  const verb = { leido: 'finished reading', leyendo: 'started reading' };
-  const icon = { leido: '✅', leyendo: '📖' };
-
   // Group consecutive entries under the same relative-time label so the feed
   // reads like a news timeline ("Today", "Yesterday", "3 days ago", ...).
   const groups = [];
@@ -1669,28 +1776,67 @@ async function loadFeed() {
   container.innerHTML = groups.map(g => `
     <div class="feed-day-group">
       <h4 class="feed-day-label">${g.label.charAt(0).toUpperCase() + g.label.slice(1)}</h4>
-      ${g.rows.map(r => `
-        <div class="feed-card feed-card-${r.status}">
-          <img class="feed-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.user_name)}" alt="">
-          <div class="cover-wrap feed-cover clickable" onclick="showBookPreview(${r.__feedIndex}, 'feed')" title="See details / add to your library">${bookCoverHtml(r.cover_url)}</div>
-          <div class="feed-body">
-            <p class="feed-headline">
-              <span class="feed-icon">${icon[r.status] || ''}</span>
-              <span class="who">${escapeHtml(r.user_name)}</span> ${verb[r.status]} <strong>${escapeHtml(r.title)}</strong>
-            </p>
-            <p class="feed-meta">${escapeHtml(r.authors) || 'Unknown author'}${r.pages ? ' · ' + r.pages + ' pages' : ''}${r.categories ? ' · ' + escapeHtml(r.categories.split(',')[0].trim()) : ''}</p>
-            ${r.status === 'leyendo' ? `
-            <div class="feed-progress-row">
-              <div class="progress-bar feed-progress-bar"><div class="progress-bar-fill" style="width:${r.progress_percent || 0}%"></div></div>
-              <span class="feed-progress-pct">${r.progress_percent || 0}%</span>
-            </div>` : ''}
-            ${r.status === 'leido' && r.rating ? `<p class="feed-rating">${'⭐'.repeat(r.rating)}</p>` : ''}
-            ${renderReactionsHtml(r)}
-          </div>
-        </div>
-      `).join('')}
+      ${g.rows.map(renderFeedCard).join('')}
     </div>
   `).join('');
+}
+
+const FEED_VERB = { leido: 'finished reading', leyendo: 'started reading' };
+const FEED_STATUS_ICON = { leido: icon('check-circle', 'icon-sm'), leyendo: icon('book-open', 'icon-sm') };
+
+function renderFeedCard(r) {
+  // The two milestone kinds and the club-goal kind are synthesized
+  // server-side (see /api/feed) rather than tied to a specific book, so they
+  // render as simple icon cards — no cover, no reactions (there's no
+  // user_books row to react to), just the headline.
+  if (r.kind === 'pages_month' || r.kind === 'pages_year') {
+    return `
+      <div class="feed-card feed-card-milestone">
+        <img class="feed-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.user_name)}" alt="">
+        <div class="feed-milestone-icon">${icon('trending-up')}</div>
+        <div class="feed-body">
+          <p class="feed-headline">
+            <span class="who">${escapeHtml(r.user_name)}</span> has read <strong>${r.pages.toLocaleString('en')} pages</strong> ${r.kind === 'pages_month' ? 'this month' : 'this year'}
+          </p>
+        </div>
+      </div>
+    `;
+  }
+  if (r.kind === 'club_goal') {
+    return `
+      <div class="feed-card feed-card-milestone">
+        <img class="feed-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.user_name)}" alt="">
+        <div class="feed-milestone-icon feed-milestone-icon-club">${icon('target')}</div>
+        <div class="feed-body">
+          <p class="feed-headline">
+            <span class="who">${escapeHtml(r.user_name)}</span> completed this week's goal in <strong>${escapeHtml(r.club_name)}</strong>
+          </p>
+          ${r.goal_description ? `<p class="feed-meta">${escapeHtml(r.goal_description)}</p>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="feed-card feed-card-${r.status}">
+      <img class="feed-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.user_name)}" alt="">
+      <div class="cover-wrap feed-cover clickable" onclick="showBookPreview(${r.__feedIndex}, 'feed')" title="See details / add to your library">${bookCoverHtml(r.cover_url)}</div>
+      <div class="feed-body">
+        <p class="feed-headline">
+          <span class="feed-icon">${FEED_STATUS_ICON[r.status] || ''}</span>
+          <span class="who">${escapeHtml(r.user_name)}</span> ${FEED_VERB[r.status]} <strong>${escapeHtml(r.title)}</strong>
+        </p>
+        <p class="feed-meta">${escapeHtml(r.authors) || 'Unknown author'}${r.pages ? ' · ' + r.pages + ' pages' : ''}${r.categories ? ' · ' + escapeHtml(r.categories.split(',')[0].trim()) : ''}</p>
+        ${r.status === 'leyendo' ? `
+        <div class="feed-progress-row">
+          <div class="progress-bar feed-progress-bar"><div class="progress-bar-fill" style="width:${r.progress_percent || 0}%"></div></div>
+          <span class="feed-progress-pct">${r.progress_percent || 0}%</span>
+        </div>` : ''}
+        ${r.status === 'leido' && r.rating ? `<p class="feed-rating">${starsHtml(r.rating)}</p>` : ''}
+        ${renderReactionsHtml(r)}
+      </div>
+    </div>
+  `;
 }
 
 // Small, fixed reaction set (like a lightweight Slack-style picker) rather
@@ -1846,7 +1992,7 @@ async function loadMyClubs() {
   }
   container.innerHTML = rows.map(c => `
     <div class="club-row" onclick="openClubDetail(${c.id})">
-      <div class="club-row-icon">📚</div>
+      <div class="club-row-icon">${icon('book')}</div>
       <div class="club-row-body">
         <p class="club-row-name">${escapeHtml(c.name)}${c.role === 'owner' ? ' <span class="status-badge leido">owner</span>' : ''}</p>
         <p class="club-row-meta">${c.member_count} member${c.member_count === 1 ? '' : 's'}${c.description ? ' · ' + escapeHtml(c.description) : ''}</p>
@@ -1866,7 +2012,7 @@ async function searchClubs() {
   const rows = await api(`/api/clubs/search?q=${encodeURIComponent(q)}`);
   container.innerHTML = rows.map(c => `
     <div class="club-row">
-      <div class="club-row-icon">📚</div>
+      <div class="club-row-icon">${icon('book')}</div>
       <div class="club-row-body">
         <p class="club-row-name">${escapeHtml(c.name)}</p>
         <p class="club-row-meta">${c.member_count} member${c.member_count === 1 ? '' : 's'}${c.description ? ' · ' + escapeHtml(c.description) : ''}</p>
@@ -1987,7 +2133,7 @@ async function loadClubDetail() {
         <div class="progress-bar club-goal-progress-bar"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
         <p class="club-goal-count">${g.completed_count} / ${g.total_members} members done</p>
         <div class="club-goal-members">
-          ${g.members.map(m => `<span class="club-goal-member ${m.completed ? 'done' : ''}">${m.completed ? '✅' : '⬜'} ${escapeHtml(m.name)}</span>`).join('')}
+          ${g.members.map(m => `<span class="club-goal-member ${m.completed ? 'done' : ''}">${m.completed ? icon('check-circle', 'icon-sm') : icon('circle', 'icon-sm')} ${escapeHtml(m.name)}</span>`).join('')}
         </div>
         <button class="${mine && mine.completed ? 'secondary' : 'primary'} small" onclick="toggleGoalComplete(${g.id}, ${mine && mine.completed})">
           ${mine && mine.completed ? 'Mark as not done' : 'Mark as done'}
