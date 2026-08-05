@@ -1936,6 +1936,18 @@ app.get('/api/achievements', async (req, res) => {
   const ownedClubCount = (await db.get(`SELECT COUNT(*) as c FROM book_clubs WHERE owner_user_id = ?`, [req.userId])).c;
   const completedGoalsCount = (await db.get(`SELECT COUNT(*) as c FROM club_goal_progress WHERE user_id = ?`, [req.userId])).c;
   const reactionsGivenCount = (await db.get(`SELECT COUNT(*) as c FROM activity_reactions WHERE user_id = ?`, [req.userId])).c;
+  // Books finished that are also on the reading list of a club you belong
+  // to — a proxy for "read as part of a book club" (a book only truly
+  // "belongs" to whichever club actually assigned it, but a shared join
+  // like this is the simplest signal we have without dedicating a new
+  // column to track it).
+  const clubBooksReadCount = (await db.get(`
+    SELECT COUNT(DISTINCT ub.book_id) as c
+    FROM user_books ub
+    WHERE ub.user_id = ? AND ub.status = 'leido' AND ub.book_id IN (
+      SELECT cb.book_id FROM club_books cb JOIN club_members cm ON cm.club_id = cb.club_id WHERE cm.user_id = ?
+    )
+  `, [req.userId, req.userId])).c;
 
   const categories = [
     {
@@ -1996,7 +2008,8 @@ app.get('/api/achievements', async (req, res) => {
         // itself the moment today's streak happens to break.
         { id: 'week_streak', icon: '📆', label: 'Week Streak', description: 'Reach a 7-day reading streak', achieved: stats.racha_maxima >= 7 },
         { id: 'month_streak', icon: '🗓️', label: 'Month Streak', description: 'Reach a 30-day reading streak', achieved: stats.racha_maxima >= 30 },
-        { id: 'century_streak', icon: '💫', label: 'Century Streak', description: 'Reach a 100-day reading streak', achieved: stats.racha_maxima >= 100 }
+        { id: 'century_streak', icon: '💫', label: 'Century Streak', description: 'Reach a 100-day reading streak', achieved: stats.racha_maxima >= 100 },
+        { id: 'year_streak', icon: '🏵️', label: 'Full Year Streak', description: 'Reach a 365-day reading streak', achieved: stats.racha_maxima >= 365 }
       ]
     },
     {
@@ -2030,7 +2043,13 @@ app.get('/api/achievements', async (req, res) => {
         { id: 'club_founder', icon: '🏛️', label: 'Club Founder', description: 'Create a book club', achieved: ownedClubCount >= 1 },
         { id: 'club_socialite', icon: '🎪', label: 'Club Socialite', description: 'Be part of 3+ book clubs', achieved: clubCount >= 3 },
         { id: 'goal_getter', icon: '✅', label: 'Goal Getter', description: 'Complete your first weekly club goal', achieved: completedGoalsCount >= 1 },
-        { id: 'weekly_warrior', icon: '🛡️', label: 'Weekly Warrior', description: 'Complete 10 weekly club goals', achieved: completedGoalsCount >= 10 }
+        { id: 'goal_streaker', icon: '🔰', label: 'Goal Streaker', description: 'Complete 5 weekly club goals', achieved: completedGoalsCount >= 5 },
+        { id: 'weekly_warrior', icon: '🛡️', label: 'Weekly Warrior', description: 'Complete 10 weekly club goals', achieved: completedGoalsCount >= 10 },
+        { id: 'club_champion', icon: '🏆', label: 'Club Champion', description: 'Complete 25 weekly club goals', achieved: completedGoalsCount >= 25 },
+        { id: 'club_legend', icon: '👑', label: 'Club Legend', description: 'Complete 50 weekly club goals', achieved: completedGoalsCount >= 50 },
+        { id: 'club_reader', icon: '📖', label: 'Club Reader', description: 'Finish 1 book from a book club', achieved: clubBooksReadCount >= 1 },
+        { id: 'club_bookworm', icon: '🐛', label: 'Club Bookworm', description: 'Finish 5 books from your book clubs', achieved: clubBooksReadCount >= 5 },
+        { id: 'club_scholar', icon: '🎓', label: 'Club Scholar', description: 'Finish 15 books from your book clubs', achieved: clubBooksReadCount >= 15 }
       ]
     },
     {
@@ -2038,7 +2057,12 @@ app.get('/api/achievements', async (req, res) => {
       label: 'Taste',
       badges: [
         { id: 'critic', icon: '⭐', label: 'Critic', description: 'Rate 5 books', achieved: ratedCount >= 5 },
-        { id: 'five_star_fan', icon: '🌟', label: 'Five-Star Fan', description: 'Give 5 books a 5-star rating', achieved: stats.rating_5_count >= 5 }
+        { id: 'seasoned_critic', icon: '📝', label: 'Seasoned Critic', description: 'Rate 15 books', achieved: ratedCount >= 15 },
+        { id: 'master_critic', icon: '🎩', label: 'Master Critic', description: 'Rate 30 books', achieved: ratedCount >= 30 },
+        { id: 'legendary_critic', icon: '🧙', label: 'Legendary Critic', description: 'Rate 50 books', achieved: ratedCount >= 50 },
+        { id: 'five_star_fan', icon: '🌟', label: 'Five-Star Fan', description: 'Give 5 books a 5-star rating', achieved: stats.rating_5_count >= 5 },
+        { id: 'five_star_devotee', icon: '💎', label: 'Five-Star Devotee', description: 'Give 15 books a 5-star rating', achieved: stats.rating_5_count >= 15 },
+        { id: 'five_star_legend', icon: '🔮', label: 'Five-Star Legend', description: 'Give 30 books a 5-star rating', achieved: stats.rating_5_count >= 30 }
       ]
     }
   ];
