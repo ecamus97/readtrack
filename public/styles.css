@@ -558,6 +558,55 @@ select {
 .feed-meta { margin: 4px 0 0; font-size: 0.8rem; color: var(--muted); }
 .feed-rating { margin: 4px 0 0; font-size: 0.85rem; }
 
+/* ---------- Social highlights strip (stories-style) ---------- */
+.social-highlights {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 4px 2px 16px;
+  margin-bottom: 4px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.social-highlights::-webkit-scrollbar { display: none; }
+.highlight-tile {
+  flex: 0 0 auto;
+  width: 92px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 12px 6px 10px;
+  border-radius: 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.highlight-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.highlight-emoji { font-size: 1.6rem; line-height: 1; }
+.highlight-title { font-size: 0.78rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 82px; }
+.highlight-sub { font-size: 0.68rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 82px; }
+.highlight-tile-streak { background: linear-gradient(135deg, var(--gold), #b9791f); border: none; }
+.highlight-tile-streak .highlight-title, .highlight-tile-streak .highlight-sub { color: white; }
+.highlight-tile-rank { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); border: none; }
+.highlight-tile-rank .highlight-title, .highlight-tile-rank .highlight-sub { color: white; }
+.highlight-avatar-wrap { position: relative; width: 46px; height: 46px; margin-bottom: 2px; }
+.highlight-avatar { width: 46px; height: 46px; border-radius: 50%; border: 2px solid var(--border); object-fit: cover; }
+.highlight-badge {
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  background: var(--card);
+  border-radius: 50%;
+  font-size: 0.68rem;
+  padding: 2px 3px;
+  border: 1px solid var(--border);
+  line-height: 1;
+}
+
 .feed-progress-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; max-width: 220px; }
 .feed-progress-bar { flex: 1; height: 6px; margin-top: 0; background: var(--border); }
 .feed-progress-bar .progress-bar-fill { background: var(--gold); }

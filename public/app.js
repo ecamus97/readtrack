@@ -1493,7 +1493,6 @@ document.querySelectorAll('.social-tabs .chip').forEach(chip => {
     document.getElementById('social-feed').classList.toggle('hidden', target !== 'feed');
     document.getElementById('social-contacts').classList.toggle('hidden', target !== 'contacts');
     document.getElementById('social-clubs').classList.toggle('hidden', target !== 'clubs');
-    document.getElementById('social-ranking').classList.toggle('hidden', target !== 'ranking');
   };
 });
 
@@ -1501,18 +1500,20 @@ async function loadSocial() {
   // allSettled, not all — one section failing (e.g. clubs) shouldn't blank
   // out the others (e.g. feed) that loaded fine.
   await Promise.allSettled([loadFeed(), loadContacts(), loadIncoming(), loadMyClubs(), loadLeaderboard()]);
+  // Depends on both the feed and the leaderboard having already settled
+  // above, so it always runs last.
+  renderSocialHighlights();
 }
 
-let currentLeaderboardMetric = 'books_this_month';
-
+// Fetched once per Social visit and cached — both the highlights strip and
+// the full-ranking modal read from window.__leaderboardCache instead of
+// each making their own request.
 async function loadLeaderboard() {
-  const container = document.getElementById('leaderboardList');
   try {
     const data = await api('/api/leaderboard');
     window.__leaderboardCache = data.leaderboard;
-    renderLeaderboard();
   } catch (e) {
-    container.innerHTML = `<p class="empty-state">Couldn't load the ranking: ${escapeHtml(e.message)}</p>`;
+    window.__leaderboardCache = [];
   }
 }
 
@@ -1520,36 +1521,103 @@ function rankMedal(i) {
   return ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
 }
 
-function renderLeaderboard() {
-  const container = document.getElementById('leaderboardList');
+// The full ranking now lives in a modal (opened from the "Ranking" highlight
+// tile) instead of its own Social sub-tab — re-invokes itself on each metric
+// chip click to switch views without closing/reopening the modal.
+function openLeaderboardModal(metric) {
+  const activeMetric = metric || 'books_this_month';
   const rows = window.__leaderboardCache || [];
-  // The list always includes yourself, even with zero contacts — only
-  // showing an empty state once there's actually someone to compare against.
-  if (rows.length <= 1) {
-    container.innerHTML = '<p class="empty-state">Add contacts to see how you compare.</p>';
-    return;
-  }
-  const metric = currentLeaderboardMetric;
-  const metricLabel = metric === 'total_pages' ? 'pages' : 'books';
-  const sorted = [...rows].sort((a, b) => (b[metric] || 0) - (a[metric] || 0));
-  container.innerHTML = sorted.map((r, i) => `
-    <div class="leaderboard-row ${r.is_me ? 'leaderboard-row-me' : ''}">
-      <span class="leaderboard-rank">${rankMedal(i)}</span>
-      <img class="feed-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.name)}" alt="">
-      <span class="leaderboard-name">${escapeHtml(r.name)}${r.is_me ? ' (you)' : ''}</span>
-      <span class="leaderboard-value">${(r[metric] || 0).toLocaleString('en')} ${metricLabel}</span>
+  const metricLabel = activeMetric === 'total_pages' ? 'pages' : 'books';
+  const sorted = [...rows].sort((a, b) => (b[activeMetric] || 0) - (a[activeMetric] || 0));
+  const metricBtn = (key, label) =>
+    `<button class="chip ${activeMetric === key ? 'active' : ''}" onclick="openLeaderboardModal('${key}')">${label}</button>`;
+  openModal(`
+    <h3>Ranking</h3>
+    <div class="filter-tabs" style="margin-bottom:14px">
+      ${metricBtn('books_this_month', 'This month')}
+      ${metricBtn('books_this_year', 'This year')}
+      ${metricBtn('total_pages', 'Total pages')}
     </div>
-  `).join('');
+    ${rows.length <= 1
+      ? '<p class="empty-state">Add contacts to see how you compare.</p>'
+      : sorted.map((r, i) => `
+        <div class="leaderboard-row ${r.is_me ? 'leaderboard-row-me' : ''}">
+          <span class="leaderboard-rank">${rankMedal(i)}</span>
+          <img class="feed-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.name)}" alt="">
+          <span class="leaderboard-name">${escapeHtml(r.name)}${r.is_me ? ' (you)' : ''}</span>
+          <span class="leaderboard-value">${(r[activeMetric] || 0).toLocaleString('en')} ${metricLabel}</span>
+        </div>
+      `).join('')
+    }
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal()">Close</button>
+    </div>
+  `);
 }
 
-document.querySelectorAll('#leaderboardMetricTabs .chip').forEach(chip => {
-  chip.onclick = () => {
-    document.querySelectorAll('#leaderboardMetricTabs .chip').forEach(c => c.classList.remove('active'));
-    chip.classList.add('active');
-    currentLeaderboardMetric = chip.dataset.metric;
-    renderLeaderboard();
-  };
-});
+// The "stories" strip at the top of Updates: your streak, your ranking spot,
+// and the most recent activity from each contact — a quicker, more visual
+// entry point than scrolling the full feed or switching tabs. Runs after
+// loadFeed() and loadLeaderboard() have both populated their caches.
+async function renderSocialHighlights() {
+  const strip = document.getElementById('socialHighlights');
+  if (!strip) return;
+
+  let streak = 0;
+  try {
+    const stats = await api('/api/stats');
+    streak = stats.racha_actual || 0;
+  } catch (e) { /* streak tile just won't show */ }
+
+  const leaderboard = window.__leaderboardCache || [];
+  const feedRows = window.__feedCache || [];
+  const tiles = [];
+
+  if (streak > 0) {
+    tiles.push(`
+      <div class="highlight-tile highlight-tile-streak" onclick="showView('dashboard')">
+        <span class="highlight-emoji">🔥</span>
+        <span class="highlight-title">${streak} day${streak === 1 ? '' : 's'}</span>
+        <span class="highlight-sub">Your streak</span>
+      </div>
+    `);
+  }
+
+  if (leaderboard.length > 1) {
+    const sortedByMonth = [...leaderboard].sort((a, b) => (b.books_this_month || 0) - (a.books_this_month || 0));
+    const myRank = sortedByMonth.findIndex(r => r.is_me) + 1;
+    tiles.push(`
+      <div class="highlight-tile highlight-tile-rank" onclick="openLeaderboardModal()">
+        <span class="highlight-emoji">${rankMedal(myRank - 1)}</span>
+        <span class="highlight-title">#${myRank} this month</span>
+        <span class="highlight-sub">See ranking</span>
+      </div>
+    `);
+  }
+
+  // One tile per contact, most-recent activity first (feedRows is already
+  // sorted that way) — dedupe so a very active contact doesn't crowd out
+  // everyone else.
+  const seenUsers = new Set();
+  for (const r of feedRows) {
+    if (seenUsers.has(r.user_id) || seenUsers.size >= 8) continue;
+    seenUsers.add(r.user_id);
+    const icon = r.status === 'leido' ? '✅' : '📖';
+    tiles.push(`
+      <div class="highlight-tile highlight-tile-contact" onclick="showBookPreview(${r.__feedIndex}, 'feed')" title="${escapeHtml(r.title)}">
+        <div class="highlight-avatar-wrap">
+          <img class="highlight-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.user_name)}" alt="">
+          <span class="highlight-badge">${icon}</span>
+        </div>
+        <span class="highlight-title">${escapeHtml((r.user_name || '').split(' ')[0])}</span>
+        <span class="highlight-sub">${escapeHtml(r.title)}</span>
+      </div>
+    `);
+  }
+
+  strip.innerHTML = tiles.join('');
+  strip.classList.toggle('hidden', !tiles.length);
+}
 
 function timeAgo(dateStr) {
   if (!dateStr) return '';
