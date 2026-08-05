@@ -160,6 +160,20 @@ create table if not exists reading_activity (
   unique (user_id, activity_date)
 );
 
+-- One reaction per user per user_books row ("congratulate"/react to a
+-- contact's feed update) — unique(user_book_id, user_id) means reacting
+-- again just changes the emoji (upsert) rather than stacking reactions;
+-- the server deletes the row entirely if you tap your existing reaction
+-- again (un-react).
+create table if not exists activity_reactions (
+  id bigserial primary key,
+  user_book_id bigint not null references user_books(id) on delete cascade,
+  user_id uuid not null references profiles(id) on delete cascade,
+  emoji text not null,
+  created_at timestamptz not null default now(),
+  unique (user_book_id, user_id)
+);
+
 -- Auto-create a profile row whenever someone signs up via Supabase Auth.
 -- The frontend passes `name` and `username` as signup metadata; falls back
 -- to the part of the email before "@" if no name was given.

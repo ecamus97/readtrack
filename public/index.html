@@ -21,7 +21,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=19">
+<link rel="stylesheet" href="styles.css?v=20">
 </head>
 <body>
   <!-- The anon key is meant to be public (it's what every Supabase JS-SDK
@@ -216,10 +216,20 @@
         <button class="chip active" data-social="feed">Updates</button>
         <button class="chip" data-social="contacts">Contacts</button>
         <button class="chip" data-social="clubs">Book Clubs</button>
+        <button class="chip" data-social="ranking">Ranking</button>
       </div>
 
       <div id="social-feed">
         <div id="feed" class="feed-list"></div>
+      </div>
+
+      <div id="social-ranking" class="hidden">
+        <div class="filter-tabs" id="leaderboardMetricTabs">
+          <button class="chip active" data-metric="books_this_month">This month</button>
+          <button class="chip" data-metric="books_this_year">This year</button>
+          <button class="chip" data-metric="total_pages">Total pages</button>
+        </div>
+        <div id="leaderboardList"></div>
       </div>
 
       <div id="social-contacts" class="hidden">
@@ -283,7 +293,7 @@
   </div> <!-- #appScreen -->
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=19"></script>
 
   <!-- The mobile-layout diagnostic overlay that used to live here has been
        removed now that it's done its job (found the safe-area/dvh issues).

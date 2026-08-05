@@ -1493,14 +1493,63 @@ document.querySelectorAll('.social-tabs .chip').forEach(chip => {
     document.getElementById('social-feed').classList.toggle('hidden', target !== 'feed');
     document.getElementById('social-contacts').classList.toggle('hidden', target !== 'contacts');
     document.getElementById('social-clubs').classList.toggle('hidden', target !== 'clubs');
+    document.getElementById('social-ranking').classList.toggle('hidden', target !== 'ranking');
   };
 });
 
 async function loadSocial() {
   // allSettled, not all — one section failing (e.g. clubs) shouldn't blank
   // out the others (e.g. feed) that loaded fine.
-  await Promise.allSettled([loadFeed(), loadContacts(), loadIncoming(), loadMyClubs()]);
+  await Promise.allSettled([loadFeed(), loadContacts(), loadIncoming(), loadMyClubs(), loadLeaderboard()]);
 }
+
+let currentLeaderboardMetric = 'books_this_month';
+
+async function loadLeaderboard() {
+  const container = document.getElementById('leaderboardList');
+  try {
+    const data = await api('/api/leaderboard');
+    window.__leaderboardCache = data.leaderboard;
+    renderLeaderboard();
+  } catch (e) {
+    container.innerHTML = `<p class="empty-state">Couldn't load the ranking: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function rankMedal(i) {
+  return ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
+}
+
+function renderLeaderboard() {
+  const container = document.getElementById('leaderboardList');
+  const rows = window.__leaderboardCache || [];
+  // The list always includes yourself, even with zero contacts — only
+  // showing an empty state once there's actually someone to compare against.
+  if (rows.length <= 1) {
+    container.innerHTML = '<p class="empty-state">Add contacts to see how you compare.</p>';
+    return;
+  }
+  const metric = currentLeaderboardMetric;
+  const metricLabel = metric === 'total_pages' ? 'pages' : 'books';
+  const sorted = [...rows].sort((a, b) => (b[metric] || 0) - (a[metric] || 0));
+  container.innerHTML = sorted.map((r, i) => `
+    <div class="leaderboard-row ${r.is_me ? 'leaderboard-row-me' : ''}">
+      <span class="leaderboard-rank">${rankMedal(i)}</span>
+      <img class="feed-avatar" src="${avatarUrl(r.avatar_seed || r.username || r.name)}" alt="">
+      <span class="leaderboard-name">${escapeHtml(r.name)}${r.is_me ? ' (you)' : ''}</span>
+      <span class="leaderboard-value">${(r[metric] || 0).toLocaleString('en')} ${metricLabel}</span>
+    </div>
+  `).join('');
+}
+
+document.querySelectorAll('#leaderboardMetricTabs .chip').forEach(chip => {
+  chip.onclick = () => {
+    document.querySelectorAll('#leaderboardMetricTabs .chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    currentLeaderboardMetric = chip.dataset.metric;
+    renderLeaderboard();
+  };
+});
 
 function timeAgo(dateStr) {
   if (!dateStr) return '';
@@ -1562,12 +1611,48 @@ async function loadFeed() {
               <span class="who">${escapeHtml(r.user_name)}</span> ${verb[r.status]} <strong>${escapeHtml(r.title)}</strong>
             </p>
             <p class="feed-meta">${escapeHtml(r.authors) || 'Unknown author'}${r.pages ? ' · ' + r.pages + ' pages' : ''}${r.categories ? ' · ' + escapeHtml(r.categories.split(',')[0].trim()) : ''}</p>
+            ${r.status === 'leyendo' ? `
+            <div class="feed-progress-row">
+              <div class="progress-bar feed-progress-bar"><div class="progress-bar-fill" style="width:${r.progress_percent || 0}%"></div></div>
+              <span class="feed-progress-pct">${r.progress_percent || 0}%</span>
+            </div>` : ''}
             ${r.status === 'leido' && r.rating ? `<p class="feed-rating">${'⭐'.repeat(r.rating)}</p>` : ''}
+            ${renderReactionsHtml(r)}
           </div>
         </div>
       `).join('')}
     </div>
   `).join('');
+}
+
+// Small, fixed reaction set (like a lightweight Slack-style picker) rather
+// than a full custom-emoji system — keeps the UI simple and the counts easy
+// to scan at a glance.
+const REACTION_EMOJIS = ['❤️', '👏', '🔥', '😮'];
+
+function renderReactionsHtml(r) {
+  return `
+    <div class="feed-reactions">
+      ${REACTION_EMOJIS.map(e => `
+        <button class="reaction-btn ${r.my_reaction === e ? 'active' : ''}" onclick="toggleReaction(${r.id}, '${e}')">
+          ${e}${r.reactions[e] ? ` <span class="reaction-count">${r.reactions[e]}</span>` : ''}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function toggleReaction(userBookId, emoji) {
+  try {
+    await api(`/api/feed/${userBookId}/react`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emoji })
+    });
+    loadFeed();
+  } catch (e) {
+    showToast(e.message);
+  }
 }
 
 document.getElementById('addContactBtn').onclick = async () => {

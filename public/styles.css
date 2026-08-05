@@ -540,19 +540,66 @@ select {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   margin-bottom: 10px;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
 }
-.feed-card-leido { border-left-color: var(--primary); }
-.feed-card-leyendo { border-left-color: var(--gold); }
+.feed-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-1px); }
+/* A faint tint of the status color behind the whole card (not just the left
+   border) makes the feed read as more alive/colorful at a glance, without
+   fighting the border-left accent already in place. */
+.feed-card-leido { border-left-color: var(--primary); background: linear-gradient(90deg, var(--primary-light) 0%, var(--card) 12%); }
+.feed-card-leyendo { border-left-color: var(--gold); background: linear-gradient(90deg, #fbf1dd 0%, var(--card) 12%); }
 .feed-avatar { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; border: 1px solid var(--border); }
-.feed-cover.cover-wrap { width: 46px; height: 66px; border-radius: 6px; flex-shrink: 0; }
-.feed-cover .placeholder { font-size: 1.3rem; }
+.feed-cover.cover-wrap { width: 54px; height: 78px; border-radius: 6px; flex-shrink: 0; }
+.feed-cover .placeholder { font-size: 1.5rem; }
 .feed-body { flex: 1; min-width: 0; }
 .feed-headline { margin: 0; line-height: 1.4; }
 .feed-icon { margin-right: 4px; }
 .feed-headline .who { font-weight: 700; }
 .feed-meta { margin: 4px 0 0; font-size: 0.8rem; color: var(--muted); }
 .feed-rating { margin: 4px 0 0; font-size: 0.85rem; }
+
+.feed-progress-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; max-width: 220px; }
+.feed-progress-bar { flex: 1; height: 6px; margin-top: 0; background: var(--border); }
+.feed-progress-bar .progress-bar-fill { background: var(--gold); }
+.feed-progress-pct { font-size: 0.75rem; font-weight: 700; color: var(--muted); flex-shrink: 0; }
+
+.feed-reactions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.reaction-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 0.88rem;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+.reaction-btn:hover { transform: scale(1.08); background: var(--primary-light); }
+.reaction-btn.active { background: var(--primary-light); border-color: var(--primary); }
+.reaction-count { font-size: 0.75rem; font-weight: 700; color: var(--muted); }
+
 .empty-state { color: var(--muted); font-size: 0.92rem; padding: 20px 0; }
+
+/* ---------- Ranking (Social tab) ---------- */
+.leaderboard-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  margin-bottom: 8px;
+}
+.leaderboard-row-me { border-color: var(--primary); background: var(--primary-light); }
+.leaderboard-rank { width: 28px; text-align: center; font-weight: 700; font-size: 1rem; flex-shrink: 0; }
+.leaderboard-name { flex: 1; font-weight: 600; }
+.leaderboard-value { font-size: 0.85rem; color: var(--muted); font-weight: 700; }
+.leaderboard-row-me .leaderboard-value { color: var(--primary-dark); }
 
 /* ---------- Modal ---------- */
 .modal-overlay {

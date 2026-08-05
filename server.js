@@ -1364,7 +1364,7 @@ app.get('/api/feed', async (req, res) => {
   // time progress was updated on a book started days/weeks earlier.
   const placeholders = contactIds.map(() => '?').join(',');
   const rows = await db.all(`
-    SELECT ub.id, ub.status, ub.rating, ub.updated_at, ub.end_date, ub.start_date,
+    SELECT ub.id, ub.status, ub.rating, ub.updated_at, ub.end_date, ub.start_date, ub.progress_percent,
            CASE WHEN ub.status = 'leido' THEN COALESCE(ub.end_date, ub.updated_at::date)
                 ELSE COALESCE(ub.start_date, ub.updated_at::date) END AS event_date,
            u.id as user_id, u.name as user_name, u.username, u.avatar_seed,
@@ -1378,7 +1378,117 @@ app.get('/api/feed', async (req, res) => {
     LIMIT 30
   `, contactIds);
 
-  res.json(rows);
+  // Attach each row's reaction counts (by emoji) and the current user's own
+  // reaction (if any), in one extra query rather than N+1 per feed item.
+  const userBookIds = rows.map(r => r.id);
+  const reactionsByRow = {};
+  if (userBookIds.length) {
+    const ph2 = userBookIds.map(() => '?').join(',');
+    const reactionRows = await db.all(
+      `SELECT user_book_id, emoji, user_id FROM activity_reactions WHERE user_book_id IN (${ph2})`,
+      userBookIds
+    );
+    for (const rr of reactionRows) {
+      const entry = reactionsByRow[rr.user_book_id] || (reactionsByRow[rr.user_book_id] = { counts: {}, mine: null });
+      entry.counts[rr.emoji] = (entry.counts[rr.emoji] || 0) + 1;
+      if (rr.user_id === req.userId) entry.mine = rr.emoji;
+    }
+  }
+
+  res.json(rows.map(r => ({
+    ...r,
+    reactions: reactionsByRow[r.id]?.counts || {},
+    my_reaction: reactionsByRow[r.id]?.mine || null
+  })));
+});
+
+// A reactor may react to their own activity or to a contact's — the
+// contacts table stores both directions once a request is accepted (see
+// /api/invites/redeem), so a single row lookup covers "are we contacts"
+// either way.
+async function canReactTo(reactorId, ownerId) {
+  if (reactorId === ownerId) return true;
+  return !!(await db.get(
+    `SELECT 1 FROM contacts WHERE user_id = ? AND contact_user_id = ? AND status = 'aceptado'`,
+    [reactorId, ownerId]
+  ));
+}
+
+// Tapping the same emoji you already reacted with removes it (un-react);
+// tapping a different one swaps it — matches the toggle behavior people
+// expect from reaction pickers on other apps, and keeps it to at most one
+// reaction per person per activity.
+app.post('/api/feed/:userBookId/react', async (req, res) => {
+  const { emoji } = req.body;
+  if (!emoji) return res.status(400).json({ error: 'emoji is required' });
+
+  const ub = await db.get('SELECT user_id FROM user_books WHERE id = ?', [req.params.userBookId]);
+  if (!ub) return res.status(404).json({ error: 'Not found' });
+  if (!(await canReactTo(req.userId, ub.user_id))) return res.status(403).json({ error: 'Not allowed' });
+
+  const existing = await db.get(
+    'SELECT emoji FROM activity_reactions WHERE user_book_id = ? AND user_id = ?',
+    [req.params.userBookId, req.userId]
+  );
+  if (existing && existing.emoji === emoji) {
+    await db.run('DELETE FROM activity_reactions WHERE user_book_id = ? AND user_id = ?', [req.params.userBookId, req.userId]);
+    return res.json({ reacted: false });
+  }
+  await db.run(`
+    INSERT INTO activity_reactions (user_book_id, user_id, emoji) VALUES (?, ?, ?)
+    ON CONFLICT (user_book_id, user_id) DO UPDATE SET emoji = EXCLUDED.emoji, created_at = now()
+  `, [req.params.userBookId, req.userId, emoji]);
+  res.json({ reacted: true, emoji });
+});
+
+// You + your accepted contacts, ranked by books finished this month/year and
+// total pages (finished books in full, in-progress books proportional to
+// their current progress — same formula computeStats uses for the Home
+// pages stat, kept in sync here). One query covering every relevant user at
+// once rather than N calls, since the contact list is small.
+app.get('/api/leaderboard', async (req, res) => {
+  const contactRows = await db.all(`SELECT contact_user_id FROM contacts WHERE user_id = ? AND status = 'aceptado'`, [req.userId]);
+  const userIds = [req.userId, ...contactRows.map(r => r.contact_user_id)];
+  const placeholders = userIds.map(() => '?').join(',');
+
+  const [profiles, rows] = await Promise.all([
+    db.all(`SELECT id, name, username, avatar_seed FROM profiles WHERE id IN (${placeholders})`, userIds),
+    db.all(`
+      SELECT ub.user_id, ub.status, ub.end_date, ub.progress_percent, b.pages
+      FROM user_books ub JOIN books b ON b.id = ub.book_id
+      WHERE ub.user_id IN (${placeholders})
+    `, userIds)
+  ]);
+
+  const anioActual = new Date().getFullYear();
+  const claveMesActual = `${anioActual}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+  const stats = new Map(userIds.map(id => [id, { books_this_month: 0, books_this_year: 0, total_pages: 0 }]));
+  for (const r of rows) {
+    const s = stats.get(r.user_id);
+    if (!s) continue;
+    if (r.status === 'leido') {
+      s.total_pages += r.pages || 0;
+      if (r.end_date && r.end_date.startsWith(String(anioActual))) s.books_this_year++;
+      if (r.end_date && r.end_date.slice(0, 7) === claveMesActual) s.books_this_month++;
+    } else if (r.status === 'leyendo' && r.pages && r.progress_percent > 0) {
+      s.total_pages += Math.round((r.pages * r.progress_percent) / 100);
+    }
+  }
+
+  const profileMap = new Map(profiles.map(p => [p.id, p]));
+  const leaderboard = userIds
+    .filter(id => profileMap.has(id))
+    .map(id => ({
+      user_id: id,
+      is_me: id === req.userId,
+      name: profileMap.get(id).name,
+      username: profileMap.get(id).username,
+      avatar_seed: profileMap.get(id).avatar_seed,
+      ...stats.get(id)
+    }));
+
+  res.json({ leaderboard });
 });
 
 // ---------- Book Clubs ----------
