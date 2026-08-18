@@ -6,5 +6,16 @@
     </linearGradient>
   </defs>
   <rect width="128" height="128" rx="28" fill="url(#g)"/>
-  <text x="64" y="88" font-family="Georgia, 'Times New Roman', serif" font-size="72" font-weight="700" fill="#ffffff" text-anchor="middle">R</text>
+  <!-- Open book, thin/translucent, as a background texture -->
+  <g transform="translate(-8,-9) scale(6)" fill="none" stroke="#f6f3ee" stroke-opacity="0.32" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 6c-2-1.2-5-1.2-8 0v13c3-1.2 6-1.2 8 0 2-1.2 5-1.2 8 0V6c-3-1.2-6-1.2-8 0z"/>
+    <line x1="12" y1="6" x2="12" y2="19"/>
+  </g>
+  <!-- RT monogram, interlaced (shared vertical stem), outline only -->
+  <g fill="none" stroke="#f6f3ee" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M44 28 H88"/>
+    <path d="M64 28 V100"/>
+    <path d="M64 28 C90 28 90 62 64 62"/>
+    <path d="M64 62 L92 100"/>
+  </g>
 </svg>
