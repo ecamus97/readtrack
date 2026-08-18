@@ -1024,19 +1024,56 @@ button.secondary:disabled { opacity: 0.55; cursor: default; }
 
 /* ---------- Library Calendar ---------- */
 
-.unscheduled-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
-.unscheduled-item {
+.sched-combo-label { display: flex; align-items: center; gap: 8px; }
+.sched-combo { position: relative; margin-bottom: 24px; max-width: 420px; }
+.sched-combo-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
+  pointer-events: none;
+}
+.sched-combo-input {
+  width: 100%;
+  padding: 12px 16px 12px 40px;
   border: 1px solid var(--border);
   border-radius: 12px;
+  font-size: 0.95rem;
+  font-family: inherit;
   background: var(--card);
+  box-sizing: border-box;
 }
-.unscheduled-cover.cover-wrap { width: 30px; height: 42px; border-radius: 4px; flex-shrink: 0; }
-.unscheduled-cover .placeholder { font-size: 1rem; }
-.unscheduled-item span { flex: 1; font-size: 0.86rem; font-weight: 600; }
+.sched-combo-input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+.sched-combo-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+}
+.sched-combo-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.sched-combo-item:hover { background: var(--primary-light); }
+.sched-combo-cover.cover-wrap { width: 28px; height: 40px; border-radius: 4px; flex-shrink: 0; }
+.sched-combo-cover .placeholder { font-size: 1rem; }
+.sched-combo-item span:not(.sched-combo-status) { flex: 1; font-size: 0.86rem; font-weight: 600; }
+.sched-combo-status { font-size: 0.72rem; color: var(--muted); font-weight: 500; flex-shrink: 0; }
+.sched-combo-empty { padding: 10px 8px; font-size: 0.86rem; color: var(--muted); }
 
 .calendar-toolbar {
   display: flex;

@@ -1093,22 +1093,25 @@ function bookRange(b) {
   return { start, end: end < start ? start : end };
 }
 
+let unscheduledCache = [];
+
 function renderLibraryCalendar() {
   const books = schedulableBooks();
   const unscheduled = books.filter(b => !bookRange(b));
   const scheduled = books.filter(b => bookRange(b));
+  unscheduledCache = unscheduled;
 
   const unscheduledContainer = document.getElementById('unscheduledBooks');
   unscheduledContainer.innerHTML = unscheduled.length ? `
-    <h4 class="section-label" style="margin-top:0">${icon('bookmark', 'icon-sm')} Not scheduled yet</h4>
-    <div class="unscheduled-list">
-      ${unscheduled.map(b => `
-        <div class="unscheduled-item">
-          <div class="cover-wrap unscheduled-cover">${bookCoverHtml(b.cover_url)}</div>
-          <span>${escapeHtml(b.title)}</span>
-          <button class="secondary small" onclick="openScheduleModal(${b.id})">Schedule</button>
-        </div>
-      `).join('')}
+    <label class="section-label sched-combo-label" style="margin-top:0">${icon('bookmark', 'icon-sm')} Not scheduled yet (${unscheduled.length})</label>
+    <div class="sched-combo">
+      <span class="sched-combo-icon">${icon('search', 'icon-sm')}</span>
+      <input type="text" id="schedComboInput" class="sched-combo-input" placeholder="Search a book to schedule…"
+             autocomplete="off"
+             oninput="filterSchedCombo(this.value)"
+             onfocus="filterSchedCombo(this.value)"
+             onblur="closeSchedCombo()">
+      <div id="schedComboList" class="sched-combo-list hidden"></div>
     </div>
   ` : '';
 
@@ -1186,6 +1189,43 @@ function renderLibraryCalendar() {
   `;
 
   document.getElementById('calendarGrid').innerHTML = gridHtml;
+}
+
+// Lightweight searchable combobox standing in for the old giant plain list
+// of unscheduled books: type to filter, click a match to jump straight into
+// the same schedule modal the calendar bars use.
+function filterSchedCombo(query) {
+  const list = document.getElementById('schedComboList');
+  if (!list) return;
+  const q = (query || '').trim().toLowerCase();
+  const matches = q ? unscheduledCache.filter(b => b.title.toLowerCase().includes(q)) : unscheduledCache;
+  list.innerHTML = matches.length
+    ? matches.slice(0, 30).map(b => `
+        <div class="sched-combo-item" onmousedown="event.preventDefault(); pickSchedCombo(${b.id})">
+          <div class="cover-wrap sched-combo-cover">${bookCoverHtml(b.cover_url)}</div>
+          <span>${escapeHtml(b.title)}</span>
+          <span class="sched-combo-status">${b.status === 'leyendo' ? 'Reading' : 'To Read'}</span>
+        </div>
+      `).join('')
+    : `<div class="sched-combo-empty">No matches</div>`;
+  list.classList.remove('hidden');
+}
+
+function closeSchedCombo() {
+  // Delay so a click on a list item (mousedown -> blur -> click) still lands
+  // before the list disappears.
+  setTimeout(() => {
+    const list = document.getElementById('schedComboList');
+    if (list) list.classList.add('hidden');
+  }, 150);
+}
+
+function pickSchedCombo(userBookId) {
+  const input = document.getElementById('schedComboInput');
+  if (input) input.value = '';
+  const list = document.getElementById('schedComboList');
+  if (list) list.classList.add('hidden');
+  openScheduleModal(userBookId);
 }
 
 function openScheduleModal(userBookId) {
