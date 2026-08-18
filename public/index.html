@@ -21,7 +21,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=23">
+<link rel="stylesheet" href="styles.css?v=24">
 </head>
 <body>
   <!-- The anon key is meant to be public (it's what every Supabase JS-SDK
@@ -38,7 +38,20 @@
   <div id="authScreen" class="auth-screen">
     <div class="auth-card">
       <div class="brand auth-brand">
-        <span class="brand-mark">R</span>
+        <span class="brand-mark">
+          <svg viewBox="0 0 128 128" class="brand-mark-svg" aria-hidden="true" focusable="false">
+            <g transform="translate(-8,-9) scale(6)" fill="none" stroke="currentColor" stroke-opacity="0.35" stroke-width="0.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 6c-2-1.2-5-1.2-8 0v13c3-1.2 6-1.2 8 0 2-1.2 5-1.2 8 0V6c-3-1.2-6-1.2-8 0z"/>
+              <line x1="12" y1="6" x2="12" y2="19"/>
+            </g>
+            <g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M44 28 H88"/>
+              <path d="M64 28 V100"/>
+              <path d="M64 28 C90 28 90 62 64 62"/>
+              <path d="M64 62 L92 100"/>
+            </g>
+          </svg>
+        </span>
         <h1>ReadTrack</h1>
       </div>
       <p class="subtitle" id="authSubtitle">Log in to your account.</p>
@@ -100,7 +113,20 @@
   <div id="appScreen" class="hidden">
   <header>
     <div class="brand">
-      <span class="brand-mark">R</span>
+      <span class="brand-mark">
+        <svg viewBox="0 0 128 128" class="brand-mark-svg" aria-hidden="true" focusable="false">
+          <g transform="translate(-8,-9) scale(6)" fill="none" stroke="currentColor" stroke-opacity="0.35" stroke-width="0.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 6c-2-1.2-5-1.2-8 0v13c3-1.2 6-1.2 8 0 2-1.2 5-1.2 8 0V6c-3-1.2-6-1.2-8 0z"/>
+            <line x1="12" y1="6" x2="12" y2="19"/>
+          </g>
+          <g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M44 28 H88"/>
+            <path d="M64 28 V100"/>
+            <path d="M64 28 C90 28 90 62 64 62"/>
+            <path d="M64 62 L92 100"/>
+          </g>
+        </svg>
+      </span>
       <h1>ReadTrack</h1>
     </div>
     <div class="user-switch">

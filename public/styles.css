@@ -44,14 +44,10 @@ header {
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-mark {
   width: 36px; height: 36px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
-  color: white;
   display: flex; align-items: center; justify-content: center;
-  font-family: "Fraunces", serif;
-  font-weight: 700;
-  font-size: 1.1rem;
+  color: var(--primary);
 }
+.brand-mark-svg { width: 100%; height: 100%; display: block; }
 header h1 { margin: 0; font-size: 1.3rem; font-weight: 700; color: var(--ink); }
 
 .user-switch { display: flex; align-items: center; gap: 10px; }
