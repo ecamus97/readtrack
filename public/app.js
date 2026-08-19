@@ -94,7 +94,10 @@ const ICONS = {
   target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/>',
   folder: '<path d="M3 6h6l2 2h10v11H3V6z"/>',
   'file-text': '<path d="M7 3h7l5 5v13H7V3z"/><line x1="9" y1="12" x2="17" y2="12"/><line x1="9" y1="16" x2="17" y2="16"/>',
-  clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/>'
+  clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/>',
+  shield: '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/>',
+  grid: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/>',
+  'help-circle': '<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 1 1 4.2 2.7c-.9.5-1.3 1-1.3 2"/><line x1="12" y1="17" x2="12" y2="17.1"/>'
 };
 
 // fill: pass true for icons meant to render solid (e.g. a filled rating
@@ -1351,6 +1354,17 @@ async function loadDashboard() {
         </div>
       </div>
     </div>
+    ` : stats.streak_save_eligible ? `
+    <div class="dash-section">
+      <div class="streak-save-banner">
+        <span class="streak-save-icon">${icon('shield', 'icon-lg')}</span>
+        <div class="streak-save-body">
+          <div class="streak-save-title">You lost your ${stats.streak_save_previous_length}-day streak</div>
+          <div class="streak-save-caption">Play a quick mini-game to win it back — ${stats.streak_save_uses_left} of ${stats.streak_save_limit} wildcard${stats.streak_save_limit === 1 ? '' : 's'} left this month</div>
+        </div>
+        <button class="primary small streak-save-btn" onclick="openStreakSaveModal()">Save my streak</button>
+      </div>
+    </div>
     ` : ''}
 
     <div class="dash-section goals-row">
@@ -1415,6 +1429,128 @@ async function loadDashboard() {
   `;
 
   renderDashboardCharts(stats);
+}
+
+// ---------- Streak Save (mini-games) ----------
+// A limited monthly wildcard offered on Home when the daily streak just
+// broke (see stats.streak_save_eligible from the server): pass a short
+// trivia round or mini sudoku to get it back. The server keeps the correct
+// answers/solution — this only ever tracks the player's in-progress picks.
+let streakSaveState = null;
+
+function openStreakSaveModal() {
+  openModal(`
+    <h3>Save your streak</h3>
+    <p class="subtitle">Pick a quick mini-game — pass it to get your streak back.</p>
+    <div class="modal-actions streak-save-choices">
+      <button class="secondary" onclick="startStreakSaveGame('trivia')">${icon('help-circle', 'icon-sm')} Trivia</button>
+      <button class="secondary" onclick="startStreakSaveGame('sudoku')">${icon('grid', 'icon-sm')} Mini sudoku</button>
+    </div>
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal()">Not now</button>
+    </div>
+  `);
+}
+
+async function startStreakSaveGame(type) {
+  try {
+    const data = await api(`/api/streak-save/${type}`);
+    streakSaveState = {
+      type,
+      token: data.token,
+      questions: data.questions || null,
+      puzzle: data.puzzle || null,
+      selections: type === 'trivia'
+        ? new Array((data.questions || []).length).fill(null)
+        : (data.puzzle || []).slice()
+    };
+    renderStreakSaveGame();
+  } catch (e) {
+    showToast(e.message);
+  }
+}
+
+function renderStreakSaveGame() {
+  const s = streakSaveState;
+  if (!s) return;
+  if (s.type === 'trivia') {
+    openModal(`
+      <h3>Trivia — save your streak</h3>
+      <p class="subtitle">Get at least 2 of 3 right.</p>
+      ${s.questions.map((q, qi) => `
+        <div class="modal-field streak-trivia-q">
+          <label>${escapeHtml(q.prompt)}</label>
+          <div class="streak-trivia-options">
+            ${q.options.map((opt, oi) => `
+              <button type="button" class="streak-trivia-opt ${s.selections[qi] === oi ? 'selected' : ''}" onclick="selectStreakTriviaOption(${qi}, ${oi})">${escapeHtml(opt)}</button>
+            `).join('')}
+          </div>
+        </div>
+      `).join('')}
+      <div class="modal-actions">
+        <button class="secondary" onclick="closeModal()">Cancel</button>
+        <button class="primary" onclick="submitStreakSaveGame()">Submit answers</button>
+      </div>
+    `, true);
+  } else {
+    openModal(`
+      <h3>Mini sudoku — save your streak</h3>
+      <p class="subtitle">Fill in the missing numbers (1-4). Every row, column and 2x2 box needs all four.</p>
+      <div class="streak-sudoku-grid">
+        ${s.puzzle.map((v, i) => `
+          <input type="text" inputmode="numeric" maxlength="1" class="streak-sudoku-cell ${v != null ? 'given' : ''}"
+                 value="${v != null ? v : (s.selections[i] != null ? s.selections[i] : '')}"
+                 ${v != null ? 'disabled' : `oninput="onStreakSudokuInput(${i}, this.value)"`}>
+        `).join('')}
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" onclick="closeModal()">Cancel</button>
+        <button class="primary" onclick="submitStreakSaveGame()">Submit</button>
+      </div>
+    `, true);
+  }
+}
+
+function selectStreakTriviaOption(qi, oi) {
+  streakSaveState.selections[qi] = oi;
+  renderStreakSaveGame();
+}
+
+function onStreakSudokuInput(i, value) {
+  const n = parseInt(value, 10);
+  streakSaveState.selections[i] = (n >= 1 && n <= 4) ? n : null;
+}
+
+async function submitStreakSaveGame() {
+  const s = streakSaveState;
+  if (!s) return;
+  try {
+    const result = await api('/api/streak-save/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: s.token, answers: s.selections })
+    });
+    if (result.success) {
+      openModal(`
+        <h3>Streak saved!</h3>
+        <p class="subtitle">Nice — your streak is back to ${result.racha_actual} day${result.racha_actual === 1 ? '' : 's'}.</p>
+        <div class="modal-actions">
+          <button class="primary" onclick="closeModal(); loadDashboard();">Nice!</button>
+        </div>
+      `);
+    } else {
+      openModal(`
+        <h3>Not quite</h3>
+        <p class="subtitle">${result.error ? escapeHtml(result.error) : "That wasn't enough to save it this time."}</p>
+        <div class="modal-actions">
+          <button class="secondary" onclick="closeModal(); loadDashboard();">Cancel</button>
+          ${result.error ? '' : `<button class="primary" onclick="startStreakSaveGame('${s.type}')">Try again</button>`}
+        </div>
+      `);
+    }
+  } catch (e) {
+    showToast(e.message);
+  }
 }
 
 // Last 12 calendar months ending this month, so the chart always reads left

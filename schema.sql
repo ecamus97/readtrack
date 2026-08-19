@@ -160,6 +160,16 @@ create table if not exists reading_activity (
   unique (user_id, activity_date)
 );
 
+-- One row per time a user successfully plays a mini-game to save a broken
+-- daily streak (see server.js /api/streak-save/*). No unique constraint —
+-- the monthly cap (currently 2) is enforced in application code by counting
+-- rows with used_at within the current calendar month, not by the schema.
+create table if not exists streak_saves (
+  id bigserial primary key,
+  user_id uuid not null references profiles(id) on delete cascade,
+  used_at timestamptz not null default now()
+);
+
 -- One reaction per user per user_books row ("congratulate"/react to a
 -- contact's feed update) — unique(user_book_id, user_id) means reacting
 -- again just changes the emoji (upsert) rather than stacking reactions;

@@ -474,6 +474,70 @@ select {
 .streak-count { font-size: 1.3rem; font-weight: 700; font-family: "Fraunces", serif; }
 .streak-caption { font-size: 0.85rem; color: rgba(255,255,255,0.85); margin-top: 2px; }
 
+/* Shown in the same spot as the streak banner once the streak just broke and
+   a monthly wildcard is still available — accent/terracotta instead of the
+   streak's gold, so it reads as "still fixable" rather than alarming, and
+   never gets visually confused with the normal active-streak state. */
+.streak-save-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: var(--radius);
+  background: var(--accent-light);
+  border: 1px solid #f3d2c2;
+  box-shadow: var(--shadow);
+}
+.streak-save-icon { display: inline-flex; color: var(--accent); }
+.streak-save-icon .icon { width: 2rem; height: 2rem; }
+.streak-save-body { flex: 1; }
+.streak-save-title { font-size: 1.1rem; font-weight: 700; font-family: "Fraunces", serif; color: var(--ink); }
+.streak-save-caption { font-size: 0.85rem; color: var(--muted); margin-top: 2px; }
+.streak-save-btn { flex-shrink: 0; }
+
+.streak-save-choices { flex-wrap: wrap; }
+.streak-save-choices button { display: flex; align-items: center; gap: 8px; }
+
+.streak-trivia-q label { margin-bottom: 8px; }
+.streak-trivia-options { display: flex; flex-direction: column; gap: 8px; }
+.streak-trivia-opt {
+  text-align: left;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.streak-trivia-opt:hover { background: var(--bg); }
+.streak-trivia-opt.selected { border-color: var(--primary); background: var(--primary-light); font-weight: 600; }
+
+.streak-sudoku-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 56px);
+  grid-template-rows: repeat(4, 56px);
+  gap: 4px;
+  margin: 12px auto 6px;
+  width: max-content;
+}
+.streak-sudoku-cell {
+  width: 56px; height: 56px;
+  text-align: center;
+  font-size: 1.3rem;
+  font-weight: 700;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: inherit;
+  background: var(--card);
+  color: var(--ink);
+}
+.streak-sudoku-cell:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+.streak-sudoku-cell.given { background: var(--bg); color: var(--muted); }
+/* Extra-thick edges marking the 2x2 box boundaries, like a real sudoku. */
+.streak-sudoku-cell:nth-child(4n+2) { border-right: 2px solid var(--ink); }
+.streak-sudoku-cell:nth-child(n+5):nth-child(-n+8) { border-bottom: 2px solid var(--ink); }
+
 .stat-card ul { margin: 6px 0 0; padding: 0; list-style: none; }
 .stat-card li { display: flex; justify-content: space-between; font-size: 0.88rem; padding: 5px 0; border-bottom: 1px dashed var(--border); }
 .stat-card li:last-child { border-bottom: none; }

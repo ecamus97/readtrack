@@ -742,27 +742,51 @@ async function computeStats(user_id) {
   // moment the clock rolls over — it only breaks once a full day is
   // skipped with no activity at all.
   const actividad = await db.all('SELECT activity_date FROM reading_activity WHERE user_id = ? ORDER BY activity_date DESC', [user_id]);
+  const diasActividad = new Set(actividad.map(a => a.activity_date.toISOString ? a.activity_date.toISOString().slice(0, 10) : String(a.activity_date).slice(0, 10)));
+  const dateKey = d => d.toISOString().slice(0, 10);
   const rachaActual = (() => {
-    if (!actividad.length) return 0;
-    const dias = new Set(actividad.map(a => a.activity_date.toISOString ? a.activity_date.toISOString().slice(0, 10) : String(a.activity_date).slice(0, 10)));
+    if (!diasActividad.size) return 0;
     const cursor = new Date();
-    const clave = d => d.toISOString().slice(0, 10);
-    if (!dias.has(clave(cursor))) cursor.setDate(cursor.getDate() - 1);
+    if (!diasActividad.has(dateKey(cursor))) cursor.setDate(cursor.getDate() - 1);
     let racha = 0;
-    while (dias.has(clave(cursor))) {
+    while (diasActividad.has(dateKey(cursor))) {
       racha++;
       cursor.setDate(cursor.getDate() - 1);
     }
     return racha;
   })();
 
+  // Streak-save eligibility: the streak just broke if yesterday has no
+  // logged activity but the day before that does — i.e. exactly one whole
+  // calendar day was skipped, ending a run that was still alive two days
+  // ago. This window closes on its own once another day passes (both
+  // yesterday AND the day before would then be empty), so there's no need
+  // for extra bookkeeping about whether the offer was already shown.
+  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+  const twoDaysAgo = new Date(); twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+  const streakJustBroken = diasActividad.has(dateKey(twoDaysAgo)) && !diasActividad.has(dateKey(yesterday));
+  let streakSavePreviousLength = 0;
+  if (streakJustBroken) {
+    const cursor = new Date(twoDaysAgo);
+    while (diasActividad.has(dateKey(cursor))) {
+      streakSavePreviousLength++;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+  }
+  const STREAK_SAVE_MONTHLY_LIMIT = 2;
+  const streakSaveUsedThisMonth = (await db.get(
+    `SELECT COUNT(*) as c FROM streak_saves WHERE user_id = ? AND used_at >= date_trunc('month', now())`,
+    [user_id]
+  )).c;
+  const streakSaveUsesLeft = Math.max(0, STREAK_SAVE_MONTHLY_LIMIT - streakSaveUsedThisMonth);
+
   // Longest streak ever achieved (not just the current one) — used for the
   // Consistency achievement badges below, since those should stay earned
   // permanently rather than un-achieving themselves the moment a streak
   // breaks (which racha_actual dropping to 0 would otherwise cause).
   const rachaMaxima = (() => {
-    if (!actividad.length) return 0;
-    const dias = [...new Set(actividad.map(a => a.activity_date.toISOString ? a.activity_date.toISOString().slice(0, 10) : String(a.activity_date).slice(0, 10)))].sort();
+    if (!diasActividad.size) return 0;
+    const dias = [...diasActividad].sort();
     let max = 1, run = 1;
     for (let i = 1; i < dias.length; i++) {
       const diff = (new Date(dias[i]) - new Date(dias[i - 1])) / (1000 * 60 * 60 * 24);
@@ -794,7 +818,11 @@ async function computeStats(user_id) {
     leidos_este_mes: leidosEsteMes,
     anio: anioActual,
     racha_actual: rachaActual,
-    racha_maxima: rachaMaxima
+    racha_maxima: rachaMaxima,
+    streak_save_eligible: streakJustBroken && streakSaveUsesLeft > 0,
+    streak_save_previous_length: streakSavePreviousLength,
+    streak_save_uses_left: streakSaveUsesLeft,
+    streak_save_limit: STREAK_SAVE_MONTHLY_LIMIT
   };
 }
 
@@ -834,6 +862,205 @@ function shuffleArray(arr) {
   }
   return a;
 }
+
+// ---------- Streak Save (mini-games) ----------
+// A limited monthly wildcard: if a user's daily reading streak just broke
+// (streak_save_eligible from computeStats), they get one shot at winning it
+// back by finishing a short mini-game instead of losing the count outright.
+// The correct answers/solution are only ever kept server-side, in a
+// short-lived in-memory map keyed by a random token — the client never
+// learns them until (if) it submits a passing attempt. This is deliberately
+// not persisted to the DB: a lost in-flight round on a server restart just
+// means the person re-requests a fresh puzzle, which is a fine trade-off for
+// something this low-stakes.
+const streakSaveAttempts = new Map();
+const STREAK_SAVE_ATTEMPT_TTL_MS = 10 * 60 * 1000; // 10 minutes to finish a round
+
+function randomToken() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+}
+
+function pruneStreakSaveAttempts() {
+  const now = Date.now();
+  for (const [token, attempt] of streakSaveAttempts) {
+    if (attempt.expires_at < now) streakSaveAttempts.delete(token);
+  }
+}
+
+// Shared eligibility check for both mini-game endpoints below. Returns the
+// fresh stats object on success, or writes a 400 response and returns null
+// (caller must then just `return` without sending anything else).
+async function requireStreakSaveEligible(req, res) {
+  const stats = await computeStats(req.userId);
+  if (!stats.streak_save_eligible) {
+    res.status(400).json({ error: "You don't have a streak wildcard available right now" });
+    return null;
+  }
+  return stats;
+}
+
+const STREAK_SAVE_FALLBACK_TITLES = [
+  'One Hundred Years of Solitude', '1984', 'The Little Prince', 'Sapiens', 'Pride and Prejudice',
+  "Harry Potter and the Sorcerer's Stone", 'The Catcher in the Rye', 'To Kill a Mockingbird',
+  'The Name of the Wind', 'The Hunger Games', 'The Hobbit', 'Brave New World'
+];
+const STREAK_SAVE_FALLBACK_GENRES = ['Fiction', 'Non-fiction', 'Fantasy', 'Mystery', 'History', 'Biography', 'Romance'];
+
+app.get('/api/streak-save/trivia', async (req, res) => {
+  const stats = await requireStreakSaveEligible(req, res);
+  if (!stats) return;
+
+  const books = await db.all(`
+    SELECT b.title, b.pages, b.categories
+    FROM user_books ub JOIN books b ON b.id = ub.book_id
+    WHERE ub.user_id = ?
+  `, [req.userId]);
+  if (books.length < 3) {
+    return res.status(400).json({ error: 'You need at least 3 books in your library for trivia' });
+  }
+
+  const usedTitles = new Set();
+  const questions = [];
+  const correct = [];
+
+  // Q1: how many pages does one of your books have.
+  const pagesPool = shuffleArray(books.filter(b => b.pages));
+  if (pagesPool.length) {
+    const b = pagesPool[0];
+    usedTitles.add(b.title);
+    const real = b.pages;
+    const distractors = new Set();
+    for (const factor of shuffleArray([1.4, 0.65, 1.6, 0.75, 1.25])) {
+      if (distractors.size >= 3) break;
+      const v = Math.max(1, Math.round(real * factor));
+      if (v !== real) distractors.add(v);
+    }
+    const options = shuffleArray([real, ...distractors].slice(0, 4));
+    questions.push({ prompt: `How many pages does "${b.title}" have?`, options: options.map(String) });
+    correct.push(options.indexOf(real));
+  }
+
+  // Q2: which category is one of your books.
+  const categoryPool = shuffleArray(books.filter(b => b.categories));
+  const categoryBook = categoryPool.find(b => !usedTitles.has(b.title)) || categoryPool[0];
+  if (categoryBook) {
+    usedTitles.add(categoryBook.title);
+    const realGenre = categoryBook.categories.split(',')[0].trim();
+    const otherGenres = [...new Set(
+      books.flatMap(b => (b.categories || '').split(',').map(s => s.trim()).filter(Boolean))
+    )].filter(g => g.toLowerCase() !== realGenre.toLowerCase());
+    const genrePool = shuffleArray([...new Set([...otherGenres, ...STREAK_SAVE_FALLBACK_GENRES])])
+      .filter(g => g.toLowerCase() !== realGenre.toLowerCase());
+    const options = shuffleArray([realGenre, ...genrePool.slice(0, 3)]);
+    questions.push({ prompt: `What category is "${categoryBook.title}" in?`, options });
+    correct.push(options.indexOf(realGenre));
+  }
+
+  // Q3: which title is actually in your library (vs. well-known decoys).
+  const titleBook = shuffleArray(books).find(b => !usedTitles.has(b.title)) || books[0];
+  usedTitles.add(titleBook.title);
+  const libraryTitlesLower = new Set(books.map(b => b.title.toLowerCase()));
+  const distractorTitles = shuffleArray(
+    STREAK_SAVE_FALLBACK_TITLES.filter(t => !libraryTitlesLower.has(t.toLowerCase()))
+  ).slice(0, 3);
+  const q3Options = shuffleArray([titleBook.title, ...distractorTitles]);
+  questions.push({ prompt: 'Which of these titles is in your library?', options: q3Options });
+  correct.push(q3Options.indexOf(titleBook.title));
+
+  if (questions.length < 3) {
+    return res.status(400).json({ error: 'Add page counts/categories to your books so trivia can be generated' });
+  }
+
+  const token = randomToken();
+  pruneStreakSaveAttempts();
+  streakSaveAttempts.set(token, {
+    user_id: req.userId,
+    type: 'trivia',
+    correct,
+    expires_at: Date.now() + STREAK_SAVE_ATTEMPT_TTL_MS
+  });
+
+  res.json({ token, questions });
+});
+
+app.get('/api/streak-save/sudoku', async (req, res) => {
+  const stats = await requireStreakSaveEligible(req, res);
+  if (!stats) return;
+
+  // Start from one known-valid 4x4 sudoku (digits 1-4, 2x2 boxes), then
+  // randomize it via digit relabeling + swapping whole row/column bands —
+  // both operations preserve row/column/box uniqueness, so the result is
+  // always a valid, different-looking puzzle without needing a real solver.
+  const base = [[1, 2, 3, 4], [3, 4, 1, 2], [2, 1, 4, 3], [4, 3, 2, 1]];
+  const digits = shuffleArray([1, 2, 3, 4]);
+  let grid = base.map(row => row.map(v => digits[v - 1]));
+  const bandedOrder = () => {
+    const first = shuffleArray([0, 1]);
+    const second = shuffleArray([2, 3]);
+    return Math.random() < 0.5 ? [...first, ...second] : [...second, ...first];
+  };
+  const rowOrder = bandedOrder();
+  grid = rowOrder.map(r => grid[r]);
+  const colOrder = bandedOrder();
+  grid = grid.map(row => colOrder.map(c => row[c]));
+
+  const solution = grid.flat();
+  const blankIdx = shuffleArray([...Array(16).keys()]).slice(0, 6);
+  const puzzle = solution.map((v, i) => (blankIdx.includes(i) ? null : v));
+
+  const token = randomToken();
+  pruneStreakSaveAttempts();
+  streakSaveAttempts.set(token, {
+    user_id: req.userId,
+    type: 'sudoku',
+    solution,
+    expires_at: Date.now() + STREAK_SAVE_ATTEMPT_TTL_MS
+  });
+
+  res.json({ token, puzzle });
+});
+
+app.post('/api/streak-save/submit', async (req, res) => {
+  const { token, answers } = req.body;
+  const attempt = streakSaveAttempts.get(token);
+  if (!attempt || attempt.user_id !== req.userId) {
+    return res.status(400).json({ error: 'This attempt is no longer valid, try again' });
+  }
+  if (attempt.expires_at < Date.now()) {
+    streakSaveAttempts.delete(token);
+    return res.status(400).json({ error: 'This attempt timed out, try again' });
+  }
+
+  const given = Array.isArray(answers) ? answers : [];
+  let passed = false;
+  if (attempt.type === 'trivia') {
+    const correctCount = attempt.correct.reduce((sum, c, i) => sum + (given[i] === c ? 1 : 0), 0);
+    passed = correctCount >= 2; // at least 2 of 3
+  } else if (attempt.type === 'sudoku') {
+    passed = given.length === 16 && given.every((v, i) => Number(v) === attempt.solution[i]);
+  }
+  streakSaveAttempts.delete(token);
+  if (!passed) return res.json({ success: false });
+
+  // Re-check eligibility right before granting the reward (not just at
+  // question-generation time) in case another tab/session already spent
+  // this month's wildcard in the meantime.
+  const stats = await computeStats(req.userId);
+  if (!stats.streak_save_eligible) {
+    return res.json({ success: false, error: "That wildcard isn't available anymore (you may have already used it)" });
+  }
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  await db.run(
+    `INSERT INTO reading_activity (user_id, activity_date) VALUES (?, ?) ON CONFLICT (user_id, activity_date) DO NOTHING`,
+    [req.userId, yesterday.toISOString().slice(0, 10)]
+  );
+  await db.run(`INSERT INTO streak_saves (user_id) VALUES (?)`, [req.userId]);
+
+  const updatedStats = await computeStats(req.userId);
+  res.json({ success: true, racha_actual: updatedStats.racha_actual });
+});
 
 // Used to bias the OpenLibrary "close to average year" sort AND now also as
 // a fallback signal for recommendations. Kept limited to finished books —
