@@ -780,6 +780,14 @@ async function computeStats(user_id) {
   )).c;
   const streakSaveUsesLeft = Math.max(0, STREAK_SAVE_MONTHLY_LIMIT - streakSaveUsedThisMonth);
 
+  // TEMP (testing only): keep the streak-save wildcard always offered,
+  // regardless of whether the streak actually just broke or the monthly
+  // quota is used up, so it can be tried on demand. Set this back to
+  // `false` (or delete the override below) once you're done trying it —
+  // the real once-a-break, 2-per-month rules are untouched and still
+  // apply everywhere else once this flag is off.
+  const STREAK_SAVE_FORCE_ELIGIBLE_FOR_TESTING = true;
+
   // Longest streak ever achieved (not just the current one) — used for the
   // Consistency achievement badges below, since those should stay earned
   // permanently rather than un-achieving themselves the moment a streak
@@ -819,8 +827,8 @@ async function computeStats(user_id) {
     anio: anioActual,
     racha_actual: rachaActual,
     racha_maxima: rachaMaxima,
-    streak_save_eligible: streakJustBroken && streakSaveUsesLeft > 0,
-    streak_save_previous_length: streakSavePreviousLength,
+    streak_save_eligible: STREAK_SAVE_FORCE_ELIGIBLE_FOR_TESTING || (streakJustBroken && streakSaveUsesLeft > 0),
+    streak_save_previous_length: streakSavePreviousLength || rachaActual || rachaMaxima || 1,
     streak_save_uses_left: streakSaveUsesLeft,
     streak_save_limit: STREAK_SAVE_MONTHLY_LIMIT
   };
