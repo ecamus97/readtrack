@@ -515,28 +515,50 @@ select {
 
 .streak-sudoku-grid {
   display: grid;
-  grid-template-columns: repeat(4, 56px);
-  grid-template-rows: repeat(4, 56px);
-  gap: 4px;
+  grid-template-columns: repeat(9, 40px);
+  grid-template-rows: repeat(9, 40px);
+  gap: 3px;
   margin: 12px auto 6px;
   width: max-content;
+  max-width: 100%;
 }
 .streak-sudoku-cell {
-  width: 56px; height: 56px;
+  width: 40px; height: 40px;
   text-align: center;
-  font-size: 1.3rem;
+  font-size: 1.05rem;
   font-weight: 700;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   font-family: inherit;
   background: var(--card);
   color: var(--ink);
 }
 .streak-sudoku-cell:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 .streak-sudoku-cell.given { background: var(--bg); color: var(--muted); }
-/* Extra-thick edges marking the 2x2 box boundaries, like a real sudoku. */
-.streak-sudoku-cell:nth-child(4n+2) { border-right: 2px solid var(--ink); }
-.streak-sudoku-cell:nth-child(n+5):nth-child(-n+8) { border-bottom: 2px solid var(--ink); }
+/* Extra-thick edges marking the 3x3 box boundaries, like a real sudoku. */
+.streak-sudoku-cell:nth-child(9n+3) { border-right: 2px solid var(--ink); }
+.streak-sudoku-cell:nth-child(9n+6) { border-right: 2px solid var(--ink); }
+.streak-sudoku-cell:nth-child(n+19):nth-child(-n+27) { border-bottom: 2px solid var(--ink); }
+.streak-sudoku-cell:nth-child(n+46):nth-child(-n+54) { border-bottom: 2px solid var(--ink); }
+
+.wordle-board { display: flex; flex-direction: column; gap: 6px; margin: 14px auto; width: max-content; max-width: 100%; }
+.wordle-row { display: flex; gap: 6px; }
+.wordle-cell {
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  font-size: 1.3rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--card);
+}
+.wordle-row-active .wordle-cell { border-color: var(--muted); }
+.wordle-cell.correct { background: var(--primary); border-color: var(--primary); color: white; }
+.wordle-cell.present { background: var(--gold); border-color: var(--gold); color: white; }
+.wordle-cell.absent { background: var(--border); border-color: var(--border); color: var(--muted); }
+#streakWordleInput { text-transform: uppercase; text-align: center; letter-spacing: 4px; font-weight: 700; }
 
 .stat-card ul { margin: 6px 0 0; padding: 0; list-style: none; }
 .stat-card li { display: flex; justify-content: space-between; font-size: 0.88rem; padding: 5px 0; border-bottom: 1px dashed var(--border); }

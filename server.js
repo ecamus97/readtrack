@@ -991,21 +991,45 @@ app.get('/api/streak-save/trivia', async (req, res) => {
   res.json({ token, questions });
 });
 
+// Given-clue counts for a standard 9x9 (81 cells) at each difficulty. These
+// are just how many cells stay filled in — the puzzle isn't checked for a
+// single unique solution (no backtracking solver here), because grading
+// below validates the *submitted* grid against sudoku's actual rules rather
+// than comparing it to one canonical answer, so any valid completion that
+// keeps the given clues intact is accepted regardless of how many solutions
+// the puzzle technically has.
+const STREAK_SAVE_SUDOKU_DIFFICULTIES = {
+  easy: { label: 'Easy', clues: 45 },
+  medium: { label: 'Medium', clues: 35 },
+  hard: { label: 'Hard', clues: 26 }
+};
+
 app.get('/api/streak-save/sudoku', async (req, res) => {
   const stats = await requireStreakSaveEligible(req, res);
   if (!stats) return;
 
-  // Start from one known-valid 4x4 sudoku (digits 1-4, 2x2 boxes), then
-  // randomize it via digit relabeling + swapping whole row/column bands —
-  // both operations preserve row/column/box uniqueness, so the result is
-  // always a valid, different-looking puzzle without needing a real solver.
-  const base = [[1, 2, 3, 4], [3, 4, 1, 2], [2, 1, 4, 3], [4, 3, 2, 1]];
-  const digits = shuffleArray([1, 2, 3, 4]);
+  const difficultyKey = STREAK_SAVE_SUDOKU_DIFFICULTIES[req.query.difficulty] ? req.query.difficulty : 'medium';
+  const difficulty = STREAK_SAVE_SUDOKU_DIFFICULTIES[difficultyKey];
+
+  // Start from one known-valid 9x9 sudoku (a standard cyclic base grid),
+  // then randomize it via digit relabeling + swapping whole row/column
+  // bands of 3 — both operations preserve row/column/3x3-box uniqueness, so
+  // the result is always a valid, different-looking puzzle without needing
+  // a real constraint-solver to build it.
+  const base = [];
+  for (let r = 0; r < 9; r++) {
+    const row = [];
+    for (let c = 0; c < 9; c++) row.push(((r * 3 + Math.floor(r / 3) + c) % 9) + 1);
+    base.push(row);
+  }
+  const digits = shuffleArray([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   let grid = base.map(row => row.map(v => digits[v - 1]));
   const bandedOrder = () => {
-    const first = shuffleArray([0, 1]);
-    const second = shuffleArray([2, 3]);
-    return Math.random() < 0.5 ? [...first, ...second] : [...second, ...first];
+    const order = [];
+    for (const band of shuffleArray([0, 1, 2])) {
+      for (const within of shuffleArray([0, 1, 2])) order.push(band * 3 + within);
+    }
+    return order;
   };
   const rowOrder = bandedOrder();
   grid = rowOrder.map(r => grid[r]);
@@ -1013,20 +1037,72 @@ app.get('/api/streak-save/sudoku', async (req, res) => {
   grid = grid.map(row => colOrder.map(c => row[c]));
 
   const solution = grid.flat();
-  const blankIdx = shuffleArray([...Array(16).keys()]).slice(0, 6);
-  const puzzle = solution.map((v, i) => (blankIdx.includes(i) ? null : v));
+  const givenIdx = new Set(shuffleArray([...Array(81).keys()]).slice(0, difficulty.clues));
+  const puzzle = solution.map((v, i) => (givenIdx.has(i) ? v : null));
 
   const token = randomToken();
   pruneStreakSaveAttempts();
   streakSaveAttempts.set(token, {
     user_id: req.userId,
     type: 'sudoku',
-    solution,
+    puzzle, // remembered so submit can confirm the given clues weren't altered
     expires_at: Date.now() + STREAK_SAVE_ATTEMPT_TTL_MS
   });
 
-  res.json({ token, puzzle });
+  res.json({ token, puzzle, difficulty: difficultyKey });
 });
+
+// True if `cells` (an array of 9 numbers) is exactly a permutation of 1-9 —
+// used to validate every row, column and 3x3 box of a submitted sudoku grid.
+function isValidSudokuUnit(cells) {
+  if (cells.length !== 9) return false;
+  const nums = cells.map(Number);
+  if (nums.some(n => !Number.isInteger(n) || n < 1 || n > 9)) return false;
+  return new Set(nums).size === 9;
+}
+
+function isValidSudokuSolution(puzzle, answers) {
+  if (!Array.isArray(answers) || answers.length !== 81) return false;
+  // The given clues must come back unchanged.
+  for (let i = 0; i < 81; i++) {
+    if (puzzle[i] != null && Number(answers[i]) !== puzzle[i]) return false;
+  }
+  for (let r = 0; r < 9; r++) {
+    if (!isValidSudokuUnit(answers.slice(r * 9, r * 9 + 9))) return false;
+  }
+  for (let c = 0; c < 9; c++) {
+    if (!isValidSudokuUnit([0, 1, 2, 3, 4, 5, 6, 7, 8].map(r => answers[r * 9 + c]))) return false;
+  }
+  for (let br = 0; br < 9; br += 3) {
+    for (let bc = 0; bc < 9; bc += 3) {
+      const box = [];
+      for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) box.push(answers[(br + i) * 9 + (bc + j)]);
+      if (!isValidSudokuUnit(box)) return false;
+    }
+  }
+  return true;
+}
+
+// Shared by every mini-game's win path: re-checks eligibility right before
+// granting the reward (not just at question-generation time, in case another
+// tab/session already spent this month's wildcard meanwhile), backfills the
+// missed day, and logs the wildcard use. Returns the response payload to
+// send — never writes to `res` itself, so callers stay in control of that.
+async function grantStreakSaveReward(user_id) {
+  const stats = await computeStats(user_id);
+  if (!stats.streak_save_eligible) {
+    return { success: false, error: "That wildcard isn't available anymore (you may have already used it)" };
+  }
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  await db.run(
+    `INSERT INTO reading_activity (user_id, activity_date) VALUES (?, ?) ON CONFLICT (user_id, activity_date) DO NOTHING`,
+    [user_id, yesterday.toISOString().slice(0, 10)]
+  );
+  await db.run(`INSERT INTO streak_saves (user_id) VALUES (?)`, [user_id]);
+  const updatedStats = await computeStats(user_id);
+  return { success: true, racha_actual: updatedStats.racha_actual };
+}
 
 app.post('/api/streak-save/submit', async (req, res) => {
   const { token, answers } = req.body;
@@ -1045,29 +1121,127 @@ app.post('/api/streak-save/submit', async (req, res) => {
     const correctCount = attempt.correct.reduce((sum, c, i) => sum + (given[i] === c ? 1 : 0), 0);
     passed = correctCount >= 2; // at least 2 of 3
   } else if (attempt.type === 'sudoku') {
-    passed = given.length === 16 && given.every((v, i) => Number(v) === attempt.solution[i]);
+    passed = isValidSudokuSolution(attempt.puzzle, given);
   }
   streakSaveAttempts.delete(token);
   if (!passed) return res.json({ success: false });
 
-  // Re-check eligibility right before granting the reward (not just at
-  // question-generation time) in case another tab/session already spent
-  // this month's wildcard in the meantime.
-  const stats = await computeStats(req.userId);
-  if (!stats.streak_save_eligible) {
-    return res.json({ success: false, error: "That wildcard isn't available anymore (you may have already used it)" });
+  res.json(await grantStreakSaveReward(req.userId));
+});
+
+// ---------- Streak Save: Wordle ----------
+// Unlike trivia/sudoku (one final submit), Wordle is guess-by-guess with
+// feedback shown after each attempt, so it gets its own start + guess
+// endpoints instead of going through the shared /submit above.
+const STREAK_SAVE_WORDLE_WORDS = [
+  'ABOUT', 'ABOVE', 'ACTOR', 'ADAPT', 'ADMIT', 'AGENT', 'ALARM', 'ALBUM', 'ALIVE', 'ALLOW',
+  'AMONG', 'ANGEL', 'ANGRY', 'APPLE', 'APPLY', 'ARGUE', 'ARISE', 'ARROW', 'ASIDE', 'AUDIO',
+  'BAKER', 'BASIC', 'BEACH', 'BEGIN', 'BLAME', 'BLANK', 'BLEND', 'BLESS', 'BLOCK', 'BOARD',
+  'BRAIN', 'BRAND', 'BREAD', 'BRIEF', 'BRING', 'BROAD', 'BROWN', 'BUILD', 'BURST', 'CABIN',
+  'CANDY', 'CARGO', 'CARRY', 'CATCH', 'CAUSE', 'CHAIN', 'CHAIR', 'CHARM', 'CHASE', 'CHEST',
+  'CHIEF', 'CLAIM', 'CLASS', 'CLEAN', 'CLEAR', 'CLIMB', 'CLOCK', 'CLOSE', 'CLOUD', 'COACH',
+  'COAST', 'COVER', 'CRAFT', 'CRASH', 'CREAM', 'CRISP', 'CROSS', 'CROWD', 'CROWN', 'DAILY',
+  'DANCE', 'DELAY', 'DEPTH', 'DIARY', 'DIGIT', 'DOUBT', 'DRAFT', 'DRAMA', 'DREAM', 'DRESS',
+  'DRINK', 'DRIVE', 'EAGER', 'EARLY', 'EARTH', 'EMPTY', 'ENJOY', 'ENTER', 'ENTRY', 'EQUAL',
+  'EXACT', 'EXIST', 'EXTRA', 'FAITH', 'FIELD', 'FIGHT', 'FINAL', 'FIRST', 'FLAME', 'FLOOR',
+  'FOCUS', 'FORCE', 'FRAME', 'FRESH', 'FRUIT', 'GHOST', 'GIANT', 'GLASS', 'GLOBE', 'GRACE',
+  'GRAND', 'GRANT', 'GRAPE', 'GREAT', 'GREEN', 'GROUP', 'GUARD', 'GUESS', 'GUIDE', 'HAPPY',
+  'HEART', 'HONOR', 'HOTEL', 'HOUSE', 'HUMOR', 'IDEAL', 'IMAGE', 'INDEX', 'INNER', 'ISSUE',
+  'JUICE', 'KNIFE', 'KNOWN', 'LEMON', 'LEVEL', 'LIGHT', 'LIMIT', 'LOCAL', 'LOGIC', 'LOYAL',
+  'LUCKY', 'MAGIC', 'MAJOR', 'MEDIA', 'MODEL', 'MONEY', 'MONTH', 'MOTOR', 'MOUNT', 'MOUSE',
+  'MOUTH', 'MOVIE', 'MUSIC', 'NOVEL', 'NURSE', 'OCEAN', 'OFFER', 'ORDER', 'OTHER', 'OUTER',
+  'PAINT', 'PANEL', 'PAPER', 'PARTY', 'PEACE', 'PHASE', 'PHOTO', 'PIECE', 'PILOT', 'PLACE',
+  'PLAIN', 'PLANT', 'PLATE', 'POINT', 'POWER', 'PRIDE', 'PRIZE', 'PROOF', 'PROUD', 'QUICK',
+  'QUIET', 'QUOTE', 'RADIO', 'REACH', 'READY', 'RIVER', 'ROBOT', 'ROUND', 'ROUTE', 'ROYAL',
+  'SCALE', 'SCENE', 'SCOPE', 'SENSE', 'SHADE', 'SHAPE', 'SHARE', 'SHARP', 'SHEET', 'SHELF',
+  'SHINE', 'SHIRT', 'SHOCK', 'SIGHT', 'SMART', 'SMILE', 'SOLID', 'SOUND', 'SPACE', 'SPARK',
+  'SPEAK', 'SPEED', 'SPICE', 'SPIRIT', 'SPORT', 'STAGE', 'STAND', 'START', 'STEAM', 'STEEL',
+  'STICK', 'STONE', 'STORM', 'STORY', 'STUDY', 'STYLE', 'SUGAR', 'SUPER', 'SWEET', 'TABLE',
+  'TALON', 'TASTE', 'TEACH', 'THANK', 'THEME', 'THINK', 'THUMB', 'TIGER', 'TITLE', 'TOTAL',
+  'TOUCH', 'TOWER', 'TRACK', 'TRADE', 'TRAIL', 'TRAIN', 'TREND', 'TRUST', 'TRUTH', 'UNDER',
+  'UNION', 'UNITY', 'URBAN', 'VALID', 'VALUE', 'VIDEO', 'VISIT', 'VOICE', 'WATCH', 'WATER',
+  'WHEEL', 'WHITE', 'WHOLE', 'WORLD', 'WORTH', 'WRITE', 'YOUTH'
+].filter(w => w.length === 5);
+
+app.get('/api/streak-save/wordle', async (req, res) => {
+  const stats = await requireStreakSaveEligible(req, res);
+  if (!stats) return;
+
+  const target = STREAK_SAVE_WORDLE_WORDS[Math.floor(Math.random() * STREAK_SAVE_WORDLE_WORDS.length)];
+  const maxAttempts = 6;
+  const token = randomToken();
+  pruneStreakSaveAttempts();
+  streakSaveAttempts.set(token, {
+    user_id: req.userId,
+    type: 'wordle',
+    target,
+    maxAttempts,
+    guesses: 0,
+    expires_at: Date.now() + STREAK_SAVE_ATTEMPT_TTL_MS
+  });
+
+  res.json({ token, wordLength: target.length, maxAttempts });
+});
+
+// Classic Wordle letter-feedback algorithm, careful with repeated letters:
+// every exact-position match is claimed first, then leftover occurrences of
+// each letter in the target are handed out (at most once per extra copy) to
+// any remaining guessed letters that share that letter, in guess order.
+function gradeWordleGuess(target, guess) {
+  const result = new Array(guess.length).fill('absent');
+  const remaining = {};
+  for (let i = 0; i < target.length; i++) {
+    if (target[i] === guess[i]) {
+      result[i] = 'correct';
+    } else {
+      remaining[target[i]] = (remaining[target[i]] || 0) + 1;
+    }
+  }
+  for (let i = 0; i < guess.length; i++) {
+    if (result[i] === 'correct') continue;
+    const letter = guess[i];
+    if (remaining[letter] > 0) {
+      result[i] = 'present';
+      remaining[letter]--;
+    }
+  }
+  return result;
+}
+
+app.post('/api/streak-save/wordle/guess', async (req, res) => {
+  const { token, guess } = req.body;
+  const attempt = streakSaveAttempts.get(token);
+  if (!attempt || attempt.user_id !== req.userId || attempt.type !== 'wordle') {
+    return res.status(400).json({ error: 'This attempt is no longer valid, try again' });
+  }
+  if (attempt.expires_at < Date.now()) {
+    streakSaveAttempts.delete(token);
+    return res.status(400).json({ error: 'This attempt timed out, try again' });
+  }
+  const cleanGuess = String(guess || '').toUpperCase().trim();
+  if (!/^[A-Z]{5}$/.test(cleanGuess)) {
+    return res.status(400).json({ error: 'Enter a 5-letter word' });
+  }
+  if (attempt.guesses >= attempt.maxAttempts) {
+    streakSaveAttempts.delete(token);
+    return res.status(400).json({ error: 'No attempts left for this word' });
   }
 
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  await db.run(
-    `INSERT INTO reading_activity (user_id, activity_date) VALUES (?, ?) ON CONFLICT (user_id, activity_date) DO NOTHING`,
-    [req.userId, yesterday.toISOString().slice(0, 10)]
-  );
-  await db.run(`INSERT INTO streak_saves (user_id) VALUES (?)`, [req.userId]);
+  attempt.guesses++;
+  const feedback = gradeWordleGuess(attempt.target, cleanGuess);
+  const solved = cleanGuess === attempt.target;
+  const attemptsLeft = attempt.maxAttempts - attempt.guesses;
 
-  const updatedStats = await computeStats(req.userId);
-  res.json({ success: true, racha_actual: updatedStats.racha_actual });
+  if (solved) {
+    streakSaveAttempts.delete(token);
+    return res.json({ feedback, solved: true, attemptsLeft, ...(await grantStreakSaveReward(req.userId)) });
+  }
+  if (attemptsLeft <= 0) {
+    const target = attempt.target;
+    streakSaveAttempts.delete(token);
+    return res.json({ feedback, solved: false, attemptsLeft: 0, gameOver: true, target, success: false });
+  }
+  res.json({ feedback, solved: false, attemptsLeft, gameOver: false });
 });
 
 // Used to bias the OpenLibrary "close to average year" sort AND now also as

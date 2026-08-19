@@ -97,7 +97,8 @@ const ICONS = {
   clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/>',
   shield: '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/>',
   grid: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/>',
-  'help-circle': '<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 1 1 4.2 2.7c-.9.5-1.3 1-1.3 2"/><line x1="12" y1="17" x2="12" y2="17.1"/>'
+  'help-circle': '<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 1 1 4.2 2.7c-.9.5-1.3 1-1.3 2"/><line x1="12" y1="17" x2="12" y2="17.1"/>',
+  keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="10" x2="6" y2="10.01"/><line x1="10" y1="10" x2="10" y2="10.01"/><line x1="14" y1="10" x2="14" y2="10.01"/><line x1="18" y1="10" x2="18" y2="10.01"/><line x1="7" y1="14" x2="17" y2="14"/>'
 };
 
 // fill: pass true for icons meant to render solid (e.g. a filled rating
@@ -1444,7 +1445,8 @@ function openStreakSaveModal() {
     <p class="subtitle">Pick a quick mini-game — pass it to get your streak back.</p>
     <div class="modal-actions streak-save-choices">
       <button class="secondary" onclick="startStreakSaveGame('trivia')">${icon('help-circle', 'icon-sm')} Trivia</button>
-      <button class="secondary" onclick="startStreakSaveGame('sudoku')">${icon('grid', 'icon-sm')} Mini sudoku</button>
+      <button class="secondary" onclick="openStreakSaveSudokuDifficulty()">${icon('grid', 'icon-sm')} Sudoku</button>
+      <button class="secondary" onclick="startStreakSaveGame('wordle')">${icon('keyboard', 'icon-sm')} Wordle</button>
     </div>
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">Not now</button>
@@ -1452,18 +1454,49 @@ function openStreakSaveModal() {
   `);
 }
 
-async function startStreakSaveGame(type) {
+function openStreakSaveSudokuDifficulty() {
+  openModal(`
+    <h3>Sudoku — pick a difficulty</h3>
+    <p class="subtitle">More blanks to fill in as it gets harder.</p>
+    <div class="modal-actions streak-save-choices">
+      <button class="secondary" onclick="startStreakSaveGame('sudoku', 'easy')">Easy</button>
+      <button class="secondary" onclick="startStreakSaveGame('sudoku', 'medium')">Medium</button>
+      <button class="secondary" onclick="startStreakSaveGame('sudoku', 'hard')">Hard</button>
+    </div>
+    <div class="modal-actions">
+      <button class="secondary" onclick="openStreakSaveModal()">Back</button>
+    </div>
+  `);
+}
+
+async function startStreakSaveGame(type, difficulty) {
   try {
-    const data = await api(`/api/streak-save/${type}`);
-    streakSaveState = {
-      type,
-      token: data.token,
-      questions: data.questions || null,
-      puzzle: data.puzzle || null,
-      selections: type === 'trivia'
-        ? new Array((data.questions || []).length).fill(null)
-        : (data.puzzle || []).slice()
-    };
+    const qs = type === 'sudoku' && difficulty ? `?difficulty=${difficulty}` : '';
+    const data = await api(`/api/streak-save/${type}${qs}`);
+    if (type === 'wordle') {
+      streakSaveState = {
+        type,
+        token: data.token,
+        wordLength: data.wordLength,
+        maxAttempts: data.maxAttempts,
+        attemptsLeft: data.maxAttempts,
+        guesses: [],
+        current: '',
+        gameOver: false,
+        solved: false
+      };
+    } else {
+      streakSaveState = {
+        type,
+        difficulty,
+        token: data.token,
+        questions: data.questions || null,
+        puzzle: data.puzzle || null,
+        selections: type === 'trivia'
+          ? new Array((data.questions || []).length).fill(null)
+          : (data.puzzle || []).slice()
+      };
+    }
     renderStreakSaveGame();
   } catch (e) {
     showToast(e.message);
@@ -1492,10 +1525,10 @@ function renderStreakSaveGame() {
         <button class="primary" onclick="submitStreakSaveGame()">Submit answers</button>
       </div>
     `, true);
-  } else {
+  } else if (s.type === 'sudoku') {
     openModal(`
-      <h3>Mini sudoku — save your streak</h3>
-      <p class="subtitle">Fill in the missing numbers (1-4). Every row, column and 2x2 box needs all four.</p>
+      <h3>Sudoku (${s.difficulty}) — save your streak</h3>
+      <p class="subtitle">Fill in the missing numbers (1-9). Every row, column and 3x3 box needs all nine.</p>
       <div class="streak-sudoku-grid">
         ${s.puzzle.map((v, i) => `
           <input type="text" inputmode="numeric" maxlength="1" class="streak-sudoku-cell ${v != null ? 'given' : ''}"
@@ -1508,6 +1541,8 @@ function renderStreakSaveGame() {
         <button class="primary" onclick="submitStreakSaveGame()">Submit</button>
       </div>
     `, true);
+  } else if (s.type === 'wordle') {
+    renderStreakSaveWordle();
   }
 }
 
@@ -1518,7 +1553,7 @@ function selectStreakTriviaOption(qi, oi) {
 
 function onStreakSudokuInput(i, value) {
   const n = parseInt(value, 10);
-  streakSaveState.selections[i] = (n >= 1 && n <= 4) ? n : null;
+  streakSaveState.selections[i] = (n >= 1 && n <= 9) ? n : null;
 }
 
 async function submitStreakSaveGame() {
@@ -1544,10 +1579,98 @@ async function submitStreakSaveGame() {
         <p class="subtitle">${result.error ? escapeHtml(result.error) : "That wasn't enough to save it this time."}</p>
         <div class="modal-actions">
           <button class="secondary" onclick="closeModal(); loadDashboard();">Cancel</button>
-          ${result.error ? '' : `<button class="primary" onclick="startStreakSaveGame('${s.type}')">Try again</button>`}
+          ${result.error ? '' : `<button class="primary" onclick="startStreakSaveGame('${s.type}', '${s.difficulty || ''}')">Try again</button>`}
         </div>
       `);
     }
+  } catch (e) {
+    showToast(e.message);
+  }
+}
+
+// ---------- Streak Save: Wordle UI ----------
+function renderStreakSaveWordle() {
+  const s = streakSaveState;
+  const rows = [];
+  for (let r = 0; r < s.maxAttempts; r++) {
+    const past = s.guesses[r];
+    if (past) {
+      rows.push(`
+        <div class="wordle-row">
+          ${past.guess.split('').map((ch, i) => `<span class="wordle-cell ${past.feedback[i]}">${escapeHtml(ch)}</span>`).join('')}
+        </div>
+      `);
+    } else if (r === s.guesses.length && !s.gameOver) {
+      rows.push(`
+        <div class="wordle-row wordle-row-active">
+          ${Array.from({ length: s.wordLength }).map((_, i) =>
+            `<span class="wordle-cell">${escapeHtml((s.current[i] || ''))}</span>`
+          ).join('')}
+        </div>
+      `);
+    } else {
+      rows.push(`
+        <div class="wordle-row">
+          ${Array.from({ length: s.wordLength }).map(() => `<span class="wordle-cell"></span>`).join('')}
+        </div>
+      `);
+    }
+  }
+
+  openModal(`
+    <h3>Wordle — save your streak</h3>
+    <p class="subtitle">${s.gameOver
+      ? (s.solved ? 'Solved!' : `Out of attempts — the word was ${escapeHtml(s.target || '')}.`)
+      : `Guess the ${s.wordLength}-letter word. ${s.attemptsLeft} attempt${s.attemptsLeft === 1 ? '' : 's'} left.`}</p>
+    <div class="wordle-board">${rows.join('')}</div>
+    ${!s.gameOver ? `
+      <div class="modal-field">
+        <input type="text" id="streakWordleInput" maxlength="${s.wordLength}" autocomplete="off" autocapitalize="characters"
+               placeholder="Type a ${s.wordLength}-letter word" value="${escapeHtml(s.current)}"
+               oninput="onStreakWordleInput(this.value)" onkeydown="if(event.key==='Enter') submitStreakWordleGuess();">
+      </div>
+    ` : ''}
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal(); loadDashboard();">${s.gameOver ? 'Close' : 'Cancel'}</button>
+      ${s.gameOver
+        ? (s.solved ? '' : `<button class="primary" onclick="startStreakSaveGame('wordle')">Try again</button>`)
+        : `<button class="primary" onclick="submitStreakWordleGuess()">Guess</button>`}
+    </div>
+  `, true);
+  const input = document.getElementById('streakWordleInput');
+  if (input) input.focus();
+}
+
+function onStreakWordleInput(value) {
+  streakSaveState.current = value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, streakSaveState.wordLength);
+}
+
+async function submitStreakWordleGuess() {
+  const s = streakSaveState;
+  if (!s || s.gameOver) return;
+  if (s.current.length !== s.wordLength) {
+    showToast(`Enter a ${s.wordLength}-letter word`);
+    return;
+  }
+  try {
+    const result = await api('/api/streak-save/wordle/guess', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: s.token, guess: s.current })
+    });
+    s.guesses.push({ guess: s.current, feedback: result.feedback });
+    s.current = '';
+    s.attemptsLeft = result.attemptsLeft;
+    if (result.solved) {
+      s.gameOver = true;
+      s.solved = true;
+      showToast(`Streak saved — back to ${result.racha_actual} day${result.racha_actual === 1 ? '' : 's'}!`);
+    } else if (result.gameOver) {
+      s.gameOver = true;
+      s.solved = false;
+      s.target = result.target;
+    }
+    renderStreakSaveGame();
   } catch (e) {
     showToast(e.message);
   }
