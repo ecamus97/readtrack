@@ -1344,17 +1344,7 @@ async function loadDashboard() {
       </div>
     </div>
 
-    ${stats.racha_actual > 0 ? `
-    <div class="dash-section">
-      <div class="streak-banner">
-        <span class="streak-flame">${icon('flame', 'icon-lg')}</span>
-        <div>
-          <div class="streak-count">${stats.racha_actual} day${stats.racha_actual === 1 ? '' : 's'} streak</div>
-          <div class="streak-caption">Update your progress today to keep it going</div>
-        </div>
-      </div>
-    </div>
-    ` : stats.streak_save_eligible ? `
+    ${stats.streak_save_eligible ? `
     <div class="dash-section">
       <div class="streak-save-banner">
         <span class="streak-save-icon">${icon('shield', 'icon-lg')}</span>
@@ -1363,6 +1353,16 @@ async function loadDashboard() {
           <div class="streak-save-caption">Play a quick mini-game to win it back — ${stats.streak_save_uses_left} of ${stats.streak_save_limit} wildcard${stats.streak_save_limit === 1 ? '' : 's'} left this month</div>
         </div>
         <button class="primary small streak-save-btn" onclick="openStreakSaveModal()">Save my streak</button>
+      </div>
+    </div>
+    ` : stats.racha_actual > 0 ? `
+    <div class="dash-section">
+      <div class="streak-banner">
+        <span class="streak-flame">${icon('flame', 'icon-lg')}</span>
+        <div>
+          <div class="streak-count">${stats.racha_actual} day${stats.racha_actual === 1 ? '' : 's'} streak</div>
+          <div class="streak-caption">Update your progress today to keep it going</div>
+        </div>
       </div>
     </div>
     ` : ''}
