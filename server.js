@@ -509,6 +509,29 @@ app.patch('/api/user-books/:id', async (req, res) => {
     );
   }
 
+  // Log only the pages gained/lost by THIS update (not the book's whole
+  // running total) with today's date, so the monthly pages chart can
+  // attribute each chunk of pages to the month it was actually read in —
+  // see computeStats()'s paginas_por_mes for how this replaces the old
+  // "re-bucket the entire in-progress total under whichever month it was
+  // last nudged in" behavior, which is what made a book you were reading in
+  // August get all its pages counted as September the moment you updated it
+  // in September.
+  if (progress_percent !== undefined && progress_percent !== owned.progress_percent) {
+    const book = await db.get('SELECT pages FROM books WHERE id = ?', [owned.book_id]);
+    if (book?.pages) {
+      const oldPages = Math.round((book.pages * (owned.progress_percent || 0)) / 100);
+      const newPages = Math.round((book.pages * progress_percent) / 100);
+      const pagesDelta = newPages - oldPages;
+      if (pagesDelta !== 0) {
+        await db.run(
+          `INSERT INTO progress_log (user_id, user_book_id, pages_delta, logged_at) VALUES (?, ?, ?, now())`,
+          [req.userId, req.params.id, pagesDelta]
+        );
+      }
+    }
+  }
+
   res.json({ ok: true, autoCompleted: status === 'leido' && resultingStatus === 'leyendo' && progress_percent === 100 });
 });
 
@@ -650,29 +673,65 @@ async function computeStats(user_id) {
   const leidos = books.filter(b => b.status === 'leido');
 
   const porMes = {};
-  const paginasPorMes = {};
   for (const b of leidos) {
     if (!b.end_date) continue;
     const mes = b.end_date.slice(0, 7); // YYYY-MM
     porMes[mes] = (porMes[mes] || 0) + 1;
-    paginasPorMes[mes] = (paginasPorMes[mes] || 0) + (b.pages || 0);
   }
 
-  // Books currently being read also contribute pages, proportional to how far
-  // in the person is (pages * progress_percent / 100) — bucketed by when the
-  // progress was last updated (falls back to "now" if that's ever missing),
-  // so the monthly chart reflects reading that's actually happening this
-  // month instead of waiting for the book to be finished before counting
-  // anything. Once a book crosses to 'leido' it drops out of this loop
-  // entirely and its full page count is counted once via the block above, so
-  // nothing is ever double-counted.
+  // Pages read per month: driven primarily by progress_log, an append-only
+  // record of the pages gained/lost by each individual progress update,
+  // dated when that update actually happened (see PATCH
+  // /api/user-books/:id) — so a book read across several months gets its
+  // pages split correctly across those months instead of the whole
+  // in-progress total getting re-bucketed under whichever month the book
+  // was most recently nudged in. Books with no log rows (finished or
+  // in-progress before this feature existed, or added straight as 'leido')
+  // fall back to the old approximation so their history doesn't just
+  // disappear.
+  const progressLogRows = await db.all(
+    `SELECT user_book_id, pages_delta, logged_at FROM progress_log WHERE user_id = ?`,
+    [user_id]
+  );
+  const logByBook = {};
+  for (const r of progressLogRows) {
+    (logByBook[r.user_book_id] ||= []).push(r);
+  }
+  const paginasPorMes = {};
+  const addLoggedPages = (logs) => {
+    for (const l of logs) {
+      const mes = (l.logged_at instanceof Date ? l.logged_at : new Date(l.logged_at)).toISOString().slice(0, 7);
+      paginasPorMes[mes] = (paginasPorMes[mes] || 0) + l.pages_delta;
+    }
+  };
+
+  for (const b of leidos) {
+    const logs = logByBook[b.id];
+    if (logs && logs.length) {
+      addLoggedPages(logs);
+    } else if (b.end_date) {
+      const mes = b.end_date.slice(0, 7);
+      paginasPorMes[mes] = (paginasPorMes[mes] || 0) + (b.pages || 0);
+    }
+  }
+
+  // Books currently being read also contribute pages, proportional to how
+  // far in the person is (pages * progress_percent / 100) for the all-time
+  // total below — but for the monthly chart, prefer the logged deltas (see
+  // above) and only fall back to bucketing the whole running total under
+  // the last-updated month if this particular book has no log history yet.
   const enProgreso = books.filter(b => b.status === 'leyendo' && b.pages && b.progress_percent > 0);
   let paginasEnProgreso = 0;
   for (const b of enProgreso) {
     const paginasLeidas = Math.round((b.pages * b.progress_percent) / 100);
     paginasEnProgreso += paginasLeidas;
-    const mes = (b.updated_at ? new Date(b.updated_at) : new Date()).toISOString().slice(0, 7);
-    paginasPorMes[mes] = (paginasPorMes[mes] || 0) + paginasLeidas;
+    const logs = logByBook[b.id];
+    if (logs && logs.length) {
+      addLoggedPages(logs);
+    } else {
+      const mes = (b.updated_at ? new Date(b.updated_at) : new Date()).toISOString().slice(0, 7);
+      paginasPorMes[mes] = (paginasPorMes[mes] || 0) + paginasLeidas;
+    }
   }
 
   const totalPaginas = leidos.reduce((sum, b) => sum + (b.pages || 0), 0) + paginasEnProgreso;

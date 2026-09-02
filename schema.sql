@@ -160,6 +160,22 @@ create table if not exists reading_activity (
   unique (user_id, activity_date)
 );
 
+-- One row per progress update that actually changed how many pages of a
+-- book have been read, storing only the DELTA (can be negative if progress
+-- was dragged backward) and when it happened — this is what lets the
+-- monthly "pages read" chart attribute pages to the month they were really
+-- read in, instead of dumping an in-progress book's whole running total
+-- into whichever month it was most recently updated. See server.js PATCH
+-- /api/user-books/:id (where rows are written) and computeStats()
+-- (paginas_por_mes, where they're read back).
+create table if not exists progress_log (
+  id bigserial primary key,
+  user_id uuid not null references profiles(id) on delete cascade,
+  user_book_id bigint not null references user_books(id) on delete cascade,
+  pages_delta integer not null,
+  logged_at timestamptz not null default now()
+);
+
 -- One row per time a user successfully plays a mini-game to save a broken
 -- daily streak (see server.js /api/streak-save/*). No unique constraint —
 -- the monthly cap (currently 2) is enforced in application code by counting
