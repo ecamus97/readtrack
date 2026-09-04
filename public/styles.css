@@ -208,6 +208,28 @@ main { padding: 28px 32px 80px; max-width: 1080px; margin: 0 auto; }
 }
 .search-bar input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 
+.library-search { position: relative; margin-bottom: 14px; }
+.library-search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  display: flex;
+  pointer-events: none;
+}
+.library-search input {
+  width: 100%;
+  padding: 12px 16px 12px 40px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: var(--card);
+  box-sizing: border-box;
+}
+.library-search input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+
 button.primary, button#searchBtn, button#addContactBtn {
   padding: 12px 20px;
   border-radius: 12px;

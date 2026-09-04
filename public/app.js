@@ -926,6 +926,12 @@ document.querySelectorAll('#libraryFilters .chip').forEach(chip => {
 });
 
 let libraryCache = [];
+let librarySearchQuery = '';
+
+function onLibrarySearchInput(value) {
+  librarySearchQuery = value.trim().toLowerCase();
+  renderLibrary();
+}
 
 async function loadLibrary() {
   try {
@@ -941,13 +947,19 @@ async function loadLibrary() {
 // Cover-only card. Title, author, status, rating, dates, and the
 // "Change status" action all live in the detail view now — tap the cover.
 function renderLibrary() {
-  const rows = libraryFilter === 'todos' ? libraryCache : libraryCache.filter(b => b.status === libraryFilter);
+  let rows = libraryFilter === 'todos' ? libraryCache : libraryCache.filter(b => b.status === libraryFilter);
+  if (librarySearchQuery) {
+    rows = rows.filter(b =>
+      (b.title || '').toLowerCase().includes(librarySearchQuery) ||
+      (b.authors || '').toLowerCase().includes(librarySearchQuery)
+    );
+  }
   const container = document.getElementById('library');
   container.innerHTML = rows.map(b => `
     <div class="card book-card-cover-only clickable" onclick="openBookDetail(${b.id})" title="${escapeHtml(b.title)}">
       <div class="cover-wrap">${bookCoverHtml(b.cover_url)}</div>
     </div>
-  `).join('') || '<p class="empty-state">You don\'t have any books in this category yet.</p>';
+  `).join('') || `<p class="empty-state">${librarySearchQuery ? 'No books match your search.' : "You don't have any books in this category yet."}</p>`;
 }
 
 function openBookDetail(id) {

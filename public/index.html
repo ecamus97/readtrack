@@ -21,7 +21,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=26">
+<link rel="stylesheet" href="styles.css?v=27">
 </head>
 <body>
   <!-- The anon key is meant to be public (it's what every Supabase JS-SDK
@@ -164,6 +164,10 @@
       </div>
 
       <div id="library-list-view">
+        <div class="library-search">
+          <span class="library-search-icon"><svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="6"/><line x1="21" y1="21" x2="14.5" y2="14.5"/></svg></span>
+          <input type="text" id="librarySearchInput" placeholder="Search your library by title or author..." autocomplete="off" oninput="onLibrarySearchInput(this.value)">
+        </div>
         <div class="filter-tabs" id="libraryFilters">
           <button class="chip active" data-filter="todos">All</button>
           <button class="chip" data-filter="leyendo">Reading</button>
@@ -316,7 +320,7 @@
   </div> <!-- #appScreen -->
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-  <script src="app.js?v=25"></script>
+  <script src="app.js?v=26"></script>
 
   <!-- The mobile-layout diagnostic overlay that used to live here has been
        removed now that it's done its job (found the safe-area/dvh issues).
